@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -9,34 +10,57 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 PORTAL_URL = "https://contrataciondelestado.es/wps/portal"
 FEED_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64?tipo=2&estado=PUB"
 
+def get_with_meta_refresh(session, url, headers, max_retries=3):
+    """Sigue automáticamente las redirecciones por meta-refresh que impone el portal."""
+    current_url = url
+    for _ in range(max_retries):
+        response = session.get(current_url, headers=headers, timeout=30)
+        text = response.text.strip()
+        
+        # Comprobar si hay una etiqueta meta-refresh
+        if "<meta" in text.lower() and "refresh" in text.lower():
+            match = re.search(r'url=([^"\']+)', text, re.IGNORECASE)
+            if match:
+                redirect_url = match.group(1).strip()
+                if redirect_url.startswith("/"):
+                    parsed = requests.utils.urlparse(current_url)
+                    redirect_url = f"{parsed.scheme}://{parsed.netloc}{redirect_url}"
+                elif not redirect_url.startswith("http"):
+                    parsed = requests.utils.urlparse(current_url)
+                    redirect_url = f"{parsed.scheme}://{parsed.netloc}/{redirect_url}"
+                
+                print(f"Siguiendo redirección automática a: {redirect_url}")
+                current_url = redirect_url
+                continue
+        break
+    return response
+
 def fetch_and_process_tenders():
-    print("Estableciendo sesión con el portal de contratación...")
+    print("Iniciando sesión y superando barreras de seguridad del portal...")
     
     session = requests.Session()
     
-    # Cabecera exclusiva para simular la navegación inicial por el portal HTML
     headers_portal = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9",
-        "Referer": "https://contrataciondelestado.es/wps/portal"
+        "Referer": "https://contrataciondelestado.es/"
     }
     
-    # Cabecera estricta para exigir el formato XML/Atom del feed
     headers_feed = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9",
         "Referer": "https://contrataciondelestado.es/wps/portal"
     }
     
     try:
-        # 1. Inicializar la sesión cargando el portal
-        session.get(PORTAL_URL, headers=headers_portal, timeout=20)
+        # 1. Visita inicial al portal para obtener las cookies de sesión válidas
+        get_with_meta_refresh(session, PORTAL_URL, headers_portal)
         
-        print("Solicitando el feed XML oficial con formato correcto...")
-        # 2. Solicitar el feed utilizando las cabeceras XML para evitar la redirección HTML
-        response = session.get(FEED_URL, headers=headers_feed, timeout=30)
+        print("Solicitando el feed XML oficial de licitaciones...")
+        # 2. Petición del feed manejando cualquier redirección intermedia
+        response = get_with_meta_refresh(session, FEED_URL, headers_feed)
         
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión o timeout: {e}")
@@ -49,7 +73,7 @@ def fetch_and_process_tenders():
     content_text = response.text.strip()
     
     if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor sigue devolviendo HTML en lugar del feed XML.")
+        print("Error: El servidor sigue bloqueando la petición y devuelve HTML.")
         print(content_text[:300])
         return
 
