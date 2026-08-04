@@ -1,7 +1,6 @@
 import os
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime
 
 # Configuración de Supabase desde variables de entorno de GitHub Actions
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -35,11 +34,14 @@ def fetch_and_process_tenders():
 
     for entry in entries:
         try:
-            title = entry.find('atom:title', namespaces).text
-            link = entry.find('atom:link', namespaces).attrib.get('href')
-            updated = entry.find('atom:updated', namespaces).text
+            title_elem = entry.find('atom:title', namespaces)
+            link_elem = entry.find('atom:link', namespaces)
+            updated_elem = entry.find('atom:updated', namespaces)
             
-            # Extraer datos básicos (ajustar según la estructura exacta del XML del Estado)
+            title = title_elem.text if title_elem is not None else "Sin título"
+            link = link_elem.attrib.get('href') if link_elem is not None else ""
+            updated = updated_elem.text if updated_elem is not None else ""
+            
             tender_data = {
                 "titulo": title,
                 "enlace": link,
@@ -55,7 +57,6 @@ def fetch_and_process_tenders():
                 "Prefer": "resolution=merge-duplicates"
             }
             
-            # Reemplaza 'licitaciones' por el nombre de tu tabla en Supabase
             supabase_response = requests.post(
                 f"{SUPABASE_URL}/rest/v1/licitaciones",
                 json=tender_data,
@@ -64,6 +65,8 @@ def fetch_and_process_tenders():
 
             if supabase_response.status_code in [200, 201]:
                 count_inserted += 1
+            else:
+                print(f"Aviso Supabase: {supabase_response.status_code} - {supabase_response.text}")
         except Exception as e:
             print(f"Error procesando una entrada: {e}")
 
