@@ -1,5 +1,4 @@
 import os
-import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -15,40 +14,30 @@ def fetch_and_process_tenders():
     
     session = requests.Session()
     
-    headers_req = {
+    # Cabecera exclusiva para simular la navegación inicial por el portal HTML
+    headers_portal = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9",
         "Referer": "https://contrataciondelestado.es/wps/portal"
     }
     
+    # Cabecera estricta para exigir el formato XML/Atom del feed
+    headers_feed = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9",
+        "Referer": "https://contrataciondelestado.es/wps/portal"
+    }
+    
     try:
-        # 1. Cargar la página principal del portal
-        resp_portal = session.get(PORTAL_URL, headers=headers_req, timeout=20)
+        # 1. Inicializar la sesión cargando el portal
+        session.get(PORTAL_URL, headers=headers_portal, timeout=20)
         
-        # Resolver meta-refresh si el portal lo exige
-        if "<meta" in resp_portal.text.lower() and "refresh" in resp_portal.text.lower():
-            match = re.search(r'url=([^"\']+)', resp_portal.text, re.IGNORECASE)
-            if match:
-                redirect_url = match.group(1).strip()
-                if redirect_url.startswith("/"):
-                    redirect_url = "https://contrataciondelestado.es" + redirect_url
-                print(f"Siguiendo redirección interna del portal: {redirect_url}")
-                session.get(redirect_url, headers=headers_req, timeout=20)
-
-        print("Solicitando el feed XML oficial...")
-        response = session.get(FEED_URL, headers=headers_req, timeout=30)
+        print("Solicitando el feed XML oficial con formato correcto...")
+        # 2. Solicitar el feed utilizando las cabeceras XML para evitar la redirección HTML
+        response = session.get(FEED_URL, headers=headers_feed, timeout=30)
         
-        # Resolver meta-refresh si el feed devuelve una página intermedia de redirección
-        if "<meta" in response.text.lower() and "refresh" in response.text.lower():
-            match = re.search(r'url=([^"\']+)', response.text, re.IGNORECASE)
-            if match:
-                redirect_url = match.group(1).strip()
-                if redirect_url.startswith("/"):
-                    redirect_url = "https://contrataciondelestado.es" + redirect_url
-                print(f"Siguiendo redirección del feed: {redirect_url}")
-                response = session.get(redirect_url, headers=headers_req, timeout=30)
-                
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión o timeout: {e}")
         return
@@ -60,7 +49,7 @@ def fetch_and_process_tenders():
     content_text = response.text.strip()
     
     if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor sigue devolviendo HTML tras intentar resolver la redirección.")
+        print("Error: El servidor sigue devolviendo HTML en lugar del feed XML.")
         print(content_text[:300])
         return
 
