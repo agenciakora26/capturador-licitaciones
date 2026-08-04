@@ -6,17 +6,29 @@ from datetime import datetime
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+PORTAL_URL = "https://contrataciondelestado.es/wps/portal"
 FEED_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64?tipo=2&estado=PUB"
 
 def fetch_and_process_tenders():
-    print("Conectando con el feed oficial de licitaciones...")
+    print("Iniciando sesión en el portal de contratación para obtener cookies...")
+    
+    # Creamos una sesión para mantener las cookies de navegación igual que un navegador real
+    session = requests.Session()
     
     headers_req = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9"
     }
     
     try:
-        response = requests.get(FEED_URL, headers=headers_req, timeout=30)
+        # 1. Visitamos primero la portada del portal para superar la barrera de cookies/sesión
+        session.get(PORTAL_URL, headers=headers_req, timeout=20)
+        
+        print("Conectando con el feed oficial de licitaciones usando la sesión activa...")
+        # 2. Ahora pedimos el feed usando la misma sesión
+        response = session.get(FEED_URL, headers=headers_req, timeout=30)
+        
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión o timeout: {e}")
         return
@@ -27,10 +39,10 @@ def fetch_and_process_tenders():
 
     content_text = response.text.strip()
     
-    # Comprobar si el servidor devolvió HTML por error/bloqueo en lugar de XML
+    # Comprobar si sigue devolviendo HTML de bloqueo
     if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor del Estado ha devuelto una página HTML (posible bloqueo temporal o mantenimiento) en lugar del XML.")
-        print(content_text[:300]) # Muestra los primeros caracteres para depurar
+        print("Error: El servidor sigue devolviendo una página HTML en lugar del XML.")
+        print(content_text[:300])
         return
 
     try:
