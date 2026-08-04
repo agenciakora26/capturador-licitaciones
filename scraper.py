@@ -10,23 +10,24 @@ PORTAL_URL = "https://contrataciondelestado.es/wps/portal"
 FEED_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64?tipo=2&estado=PUB"
 
 def fetch_and_process_tenders():
-    print("Iniciando sesión en el portal de contratación para obtener cookies...")
+    print("Estableciendo sesión con el portal de contratación...")
     
-    # Creamos una sesión para mantener las cookies de navegación igual que un navegador real
     session = requests.Session()
     
+    # Cabeceras completas simulando un navegador real
     headers_req = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9",
+        "Referer": "https://contrataciondelestado.es/wps/portal"
     }
     
     try:
-        # 1. Visitamos primero la portada del portal para superar la barrera de cookies/sesión
+        # 1. Cargar la página principal para obtener cookies de sesión válidas
         session.get(PORTAL_URL, headers=headers_req, timeout=20)
         
-        print("Conectando con el feed oficial de licitaciones usando la sesión activa...")
-        # 2. Ahora pedimos el feed usando la misma sesión
+        print("Solicitando el feed XML oficial...")
+        # 2. Solicitar el feed indicando el Referer correcto
         response = session.get(FEED_URL, headers=headers_req, timeout=30)
         
     except requests.exceptions.RequestException as e:
@@ -39,9 +40,9 @@ def fetch_and_process_tenders():
 
     content_text = response.text.strip()
     
-    # Comprobar si sigue devolviendo HTML de bloqueo
+    # Verificar si el servidor devuelve HTML de bloqueo o redirección
     if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor sigue devolviendo una página HTML en lugar del XML.")
+        print("Error: El servidor sigue bloqueando la petición directa al feed.")
         print(content_text[:300])
         return
 
