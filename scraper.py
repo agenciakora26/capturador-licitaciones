@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -14,7 +15,6 @@ def fetch_and_process_tenders():
     
     session = requests.Session()
     
-    # Cabeceras completas simulando un navegador real
     headers_req = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -23,13 +23,32 @@ def fetch_and_process_tenders():
     }
     
     try:
-        # 1. Cargar la página principal para obtener cookies de sesión válidas
-        session.get(PORTAL_URL, headers=headers_req, timeout=20)
+        # 1. Cargar la página principal del portal
+        resp_portal = session.get(PORTAL_URL, headers=headers_req, timeout=20)
         
+        # Resolver meta-refresh si el portal lo exige
+        if "<meta" in resp_portal.text.lower() and "refresh" in resp_portal.text.lower():
+            match = re.search(r'url=([^"\']+)', resp_portal.text, re.IGNORECASE)
+            if match:
+                redirect_url = match.group(1).strip()
+                if redirect_url.startswith("/"):
+                    redirect_url = "https://contrataciondelestado.es" + redirect_url
+                print(f"Siguiendo redirección interna del portal: {redirect_url}")
+                session.get(redirect_url, headers=headers_req, timeout=20)
+
         print("Solicitando el feed XML oficial...")
-        # 2. Solicitar el feed indicando el Referer correcto
         response = session.get(FEED_URL, headers=headers_req, timeout=30)
         
+        # Resolver meta-refresh si el feed devuelve una página intermedia de redirección
+        if "<meta" in response.text.lower() and "refresh" in response.text.lower():
+            match = re.search(r'url=([^"\']+)', response.text, re.IGNORECASE)
+            if match:
+                redirect_url = match.group(1).strip()
+                if redirect_url.startswith("/"):
+                    redirect_url = "https://contrataciondelestado.es" + redirect_url
+                print(f"Siguiendo redirección del feed: {redirect_url}")
+                response = session.get(redirect_url, headers=headers_req, timeout=30)
+                
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión o timeout: {e}")
         return
@@ -40,9 +59,8 @@ def fetch_and_process_tenders():
 
     content_text = response.text.strip()
     
-    # Verificar si el servidor devuelve HTML de bloqueo o redirección
     if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor sigue bloqueando la petición directa al feed.")
+        print("Error: El servidor sigue devolviendo HTML tras intentar resolver la redirección.")
         print(content_text[:300])
         return
 
