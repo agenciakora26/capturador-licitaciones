@@ -1,4 +1,5 @@
 import os
+import re
 from curl_cffi import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -6,14 +7,45 @@ from datetime import datetime
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+PORTAL_URL = "https://contrataciondelestado.es/wps/portal"
 FEED_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64?tipo=2&estado=PUB"
 
 def fetch_and_process_tenders():
-    print("Conectando con el feed oficial mediante suplantación de huella TLS de Chrome...")
+    print("Iniciando sesión con suplantación de huella TLS de Chrome...")
+    
+    # Creamos una sesión que clava la criptografía y comportamiento de Chrome
+    session = requests.Session(impersonate="chrome120")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9",
+        "Referer": "https://contrataciondelestado.es/"
+    }
     
     try:
-        # curl_cffi clona el comportamiento criptográfico de un navegador real de escritorio
-        response = requests.get(FEED_URL, impersonate="chrome120", timeout=30)
+        # 1. Visita obligatoria al portal para superar la barrera inicial y obtener cookies de sesión
+        resp_portal = session.get(PORTAL_URL, headers=headers, timeout=20)
+        
+        text_portal = resp_portal.text.strip()
+        if "<meta" in text_portal.lower() and "refresh" in text_portal.lower():
+            match = re.search(r'url=([^"\']+)', text_portal, re.IGNORECASE)
+            if match:
+                redirect_url = match.group(1).strip()
+                if redirect_url.startswith("/"):
+                    redirect_url = "https://contrataciondelestado.es" + redirect_url
+                print(f"Siguiendo redirección inicial del portal: {redirect_url}")
+                session.get(redirect_url, headers=headers, timeout=20)
+
+        print("Solicitando el feed XML oficial con la sesión activa...")
+        
+        # Cabecera estricta para exigir formato XML/Atom manteniendo las cookies de la sesión
+        headers_feed = headers.copy()
+        headers_feed["Accept"] = "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8"
+        headers_feed["Referer"] = PORTAL_URL
+        
+        response = session.get(FEED_URL, headers=headers_feed, timeout=30)
+        
     except Exception as e:
         print(f"Error de conexión o timeout: {e}")
         return
@@ -24,9 +56,8 @@ def fetch_and_process_tenders():
 
     content_text = response.text.strip()
     
-    # Comprobar si el servidor devuelve HTML de bloqueo
-    if content_text.startswith("<!DOCTYPE") or content_text.startswith("<html"):
-        print("Error: El servidor sigue bloqueando la petición.")
+    if content_text.startswith("<!DOCTYPE") or "<html" in content_text[:100].lower():
+        print("Error: El servidor sigue bloqueando la petición y devuelve HTML.")
         print(content_text[:300])
         return
 
@@ -68,19 +99,18 @@ def fetch_and_process_tenders():
                     "fecha_actualizacion": updated
                 }
 
-                headers = {
+                supabase_headers = {
                     "apikey": SUPABASE_KEY,
                     "Authorization": f"Bearer {SUPABASE_KEY}",
                     "Content-Type": "application/json",
                     "Prefer": "resolution=merge-duplicates"
                 }
                 
-                # Usamos requests estándar de python para la API REST de Supabase
                 import requests as std_requests
                 supabase_response = std_requests.post(
                     f"{SUPABASE_URL}/rest/v1/licitaciones",
                     json=tender_data,
-                    headers=headers,
+                    headers=supabase_headers,
                     timeout=10
                 )
 
