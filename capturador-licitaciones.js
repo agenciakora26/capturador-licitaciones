@@ -14,10 +14,10 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-// Usando un proxy público de redirección para evitar el bloqueo directo de IP
-const PROXY_URL = "https://api.allorigins.win/raw?url=" + encodeURIComponent(ATOM_URL);
 // URL del feed ATOM oficial (este endpoint sí permite el acceso directo sin bloqueos de ZIP)
 const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
+// Usando un proxy público de redirección para evitar el bloqueo directo de IP
+const PROXY_URL = "https://api.allorigins.win/raw?url=" + encodeURIComponent(ATOM_URL);
 
 async function ejecutarCaptura() {
     console.log("Iniciando descarga del feed ATOM oficial...");
