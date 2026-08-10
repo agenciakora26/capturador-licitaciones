@@ -5,11 +5,13 @@
   "main": "enviar-resumen.js",
   "type": "module",
   "scripts": {
-    "start": "node enviar-resumen.js"
+    "start": "node enviar-resumen.js",
+    "capturar": "node capturador-licitaciones.js"
   },
   "dependencies": {
     "@google/genai": "latest",
     "@supabase/supabase-js": "^2.0.0",
+    "adm-zip": "^0.5.16",
     "cheerio": "^1.0.0",
     "fast-xml-parser": "^4.3.6",
     "pdf-parse": "^1.1.1",
