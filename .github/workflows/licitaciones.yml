@@ -1,39 +1,27 @@
-name: Sincronizador Licitaciones PLACSP
+name: Capturar Licitaciones Diarias
 
 on:
-  workflow_dispatch:
   schedule:
-      # Se ejecuta cada 2 horas de lunes a domingo
-      - cron: "0 */2 * * *"
-
-permissions:
-  contents: read
-
-concurrency:
-  group: sincronizador-licitaciones
-  cancel-in-progress: false
+    - cron: '0 8 * * *' # Se ejecuta todos los días a las 8:00 UTC (9:00 en España)
+  workflow_dispatch: # Permite darle al botón "Run workflow" manualmente cuando quieras
 
 jobs:
-  sincronizar:
+  run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
-      - name: Clonar repositorio
-        uses: actions/checkout@v4
+      - name: Checkout del repositorio
+        uses: actions/checkout@v3
 
       - name: Configurar Node.js
-        uses: actions/setup-node@v4
+        uses: actions/action-setup@v3 # O usa actions/setup-node@v3
         with:
-          node-version: "20"
+          node-version: '18'
 
       - name: Instalar dependencias
-        run: npm install --no-audit --no-fund
+        run: npm install
 
-      - name: Ejecutar sincronizador de licitaciones
+      - name: Ejecutar script de licitaciones
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          TZ: Europe/Madrid
-        run: |
-          node sincronizar-licitaciones.js
+        run: node capturador-licitaciones.js
