@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { XMLParser } from 'fast-xml-parser';
 import AdmZip from 'adm-zip';
+import ws from 'ws';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -10,7 +11,12 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
     process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Inicializamos Supabase pasando el transporte de WebSocket requerido para Node.js < 22
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    realtime: {
+        transport: ws
+    }
+});
 
 // URL del fichero ZIP oficial de la Plataforma de Contratación del Sector Público
 const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
@@ -24,7 +30,6 @@ async function ejecutarCaptura() {
             throw new Error(`Error al descargar el ZIP: ${response.statusText}`);
         }
 
-        // Convertimos la respuesta binaria a un Buffer de Node.js
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
@@ -53,7 +58,6 @@ async function ejecutarCaptura() {
         });
         const jsonObj = parser.parse(xmlContent);
 
-        // Obtenemos la lista de entradas (licitaciones) del feed ATOM
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
@@ -62,12 +66,10 @@ async function ejecutarCaptura() {
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
-            // Extraemos los campos principales adaptados al esquema CODICE / PLACSP
             const numExpediente = entry['cac-place-ext:ContractFolderStatus']?.['cbc:ContractFolderID'] || entry.id;
             const objeto = entry.title?.['#text'] || entry.title || 'Sin objeto especificado';
             const urlLicitacion = entry.link?.['@_href'] || '';
             
-            // Filtramos o mapeamos los datos básicos
             if (numExpediente) {
                 licitacionesParaGuardar.push({
                     num_expediente: String(numExpediente).trim(),
@@ -83,12 +85,10 @@ async function ejecutarCaptura() {
             return;
         }
 
-        // Dividimos en lotes (chunks) de 500 para evitar saturar Supabase con miles de registros
         const tamanoLote = 500;
         for (let i = 0; i < licitacionesParaGuardar.length; i += tamanoLote) {
             const lote = licitacionesParaGuardar.slice(i, i + tamanoLote);
 
-            // Inserción inteligente en Supabase (Upsert: si ya existe el expediente, lo actualiza; si no, lo crea)
             const { error } = await supabase
                 .from('licitaciones')
                 .upsert(lote, { onConflict: 'num_expediente' });
