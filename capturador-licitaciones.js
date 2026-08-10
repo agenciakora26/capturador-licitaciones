@@ -14,7 +14,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-// URL oficial directa del feed ATOM de datos abiertos de la PLACSP
 const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
 
 async function ejecutarCaptura() {
@@ -48,21 +47,66 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros...`);
+        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros con detalle...`);
 
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
+            const status = entry['cac-place-ext:ContractFolderStatus'] || {};
+            const project = status['cac:ProcurementProject'] || {};
+
+            // 1. Número de expediente
             const numExpediente = 
-                entry['cac-place-ext:ContractFolderStatus']?.['cbc:ContractFolderID'] || 
+                status['cbc:ContractFolderID'] || 
                 entry['cbc:ContractFolderID'] || 
                 entry.id;
 
+            // 2. Objeto del contrato
             const objeto = 
+                project['cbc:Name'] || 
                 entry.title?.['#text'] || 
                 entry.title || 
                 'Sin objeto especificado';
 
+            // 3. Presupuesto base
+            let presupuesto = null;
+            const budgetNode = project['cbc:BudgetAmount'] || status['cbc:BudgetAmount'];
+            if (budgetNode) {
+                const rawPresupuesto = typeof budgetNode === 'object' ? 
+                    (budgetNode['cbc:TaxExclusiveAmount'] || budgetNode['cbc:TotalAmount'] || budgetNode['#text']) : budgetNode;
+                if (rawPresupuesto) {
+                    presupuesto = parseFloat(rawPresupuesto) || null;
+                }
+            }
+
+            // 4. Tipo de contrato
+            const tipoContrato = project['cbc:TypeCode'] || null;
+
+            // 5. Código CPV
+            let codigoCpv = null;
+            const cpvNode = project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode'];
+            if (cpvNode) {
+                codigoCpv = typeof cpvNode === 'object' ? (cpvNode['#text'] || null) : String(cpvNode);
+            }
+
+            // 6. Fecha fin de oferta
+            let fechaFin = null;
+            const deadlineNode = status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'];
+            if (deadlineNode) {
+                fechaFin = typeof deadlineNode === 'object' ? (deadlineNode['#text'] || null) : String(deadlineNode);
+            }
+
+            // 7. Provincia
+            let provincia = null;
+            const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'];
+            if (addressNode) {
+                provincia = addressNode['cbc:CountrySubentity'] || addressNode['cbc:CityName'] || null;
+            }
+
+            // 8. Estado oficial
+            const estado = status['cbc:ContractFolderStatusCode'] || 'Publicada';
+
+            // 9. URL de la licitación
             let urlLicitacion = '';
             if (entry.link) {
                 if (Array.isArray(entry.link)) {
@@ -77,8 +121,14 @@ async function ejecutarCaptura() {
                 licitacionesParaGuardar.push({
                     num_expediente: String(numExpediente).trim(),
                     objeto_contrato: String(objeto).trim(),
-                    estado_oficial: 'Publicada',
-                    url_licitacion: String(urlLicitacion).trim()
+                    presupuesto_base: presupuesto,
+                    tipo_contrato: tipoContrato ? String(tipoContrato).trim() : null,
+                    codigo_cpv: codigoCpv ? String(codigoCpv).trim() : null,
+                    fecha_fin_oferta: fechaFin ? String(fechaFin).trim() : null,
+                    provincia: provincia ? String(provincia).trim() : null,
+                    estado_oficial: String(estado).trim(),
+                    url_licitacion: String(urlLicitacion).trim(),
+                    origen: 'PLACSP'
                 });
             }
         }
@@ -101,7 +151,7 @@ async function ejecutarCaptura() {
             }
         }
 
-        console.log(`¡Proceso completado con éxito! Sincronizados ${licitacionesParaGuardar.length} registros en Supabase.`);
+        console.log(`¡Proceso completado con éxito! Sincronizados y enriquecidos ${licitacionesParaGuardar.length} registros en Supabase.`);
 
     } catch (err) {
         console.error("Error crítico durante la ejecución del script:", err);
