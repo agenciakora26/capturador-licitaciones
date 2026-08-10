@@ -16,7 +16,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
 
-// Función auxiliar robusta para extraer texto limpio de cualquier nodo
 function extractText(node) {
     if (node === null || node === undefined) return null;
     if (typeof node === 'string' || typeof node === 'number') return String(node).trim();
@@ -39,7 +38,6 @@ function extractText(node) {
     return null;
 }
 
-// Buscador recursivo profundo para encontrar una etiqueta específica en cualquier nivel del XML
 function findDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
     if (obj[targetKey] !== undefined) {
@@ -55,10 +53,8 @@ function findDeep(obj, targetKey) {
     return null;
 }
 
-// Mapeo exhaustivo de códigos oficiales de tipo de contrato
-function mapTipoContrato(code, rawEntry) {
-    // Si el propio texto ya viene descrito
-    if (code &&isNaN(code)) {
+function mapTipoContrato(code) {
+    if (code && isNaN(code)) {
         const text = String(code).toLowerCase();
         if (text.includes('obra')) return 'Obras';
         if (text.includes('suministro')) return 'Suministros';
@@ -74,7 +70,7 @@ function mapTipoContrato(code, rawEntry) {
         '21': 'Suministros',
         '31': 'Servicios',
         '40': 'Privado',
-        '50': 'Servicios', // Homologación estándar para códigos genéricos de servicios/asistencias
+        '50': 'Servicios',
         '11': 'Obras',
         '22': 'Suministros',
         '32': 'Servicios'
@@ -113,15 +109,12 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Procesando ${listaEntradas.length} registros con extracción profunda...`);
-
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
 
-            // 1. Número de expediente
             const numExpediente = extractText(
                 status['cbc:ContractFolderID'] || 
                 entry['cbc:ContractFolderID'] || 
@@ -129,7 +122,6 @@ async function ejecutarCaptura() {
                 entry.id
             );
 
-            // 2. Objeto del contrato
             const objeto = extractText(
                 project['cbc:Name'] || 
                 status['cbc:Name'] || 
@@ -137,7 +129,6 @@ async function ejecutarCaptura() {
                 entry.title
             ) || 'Sin objeto especificado';
 
-            // 3. Presupuesto base
             let presupuesto = null;
             const rawPresupuesto = findDeep(status, 'cbc:TaxExclusiveAmount') || 
                                    findDeep(status, 'cbc:TotalAmount') || 
@@ -148,24 +139,21 @@ async function ejecutarCaptura() {
                 if (!isNaN(parsed)) presupuesto = parsed;
             }
 
-            // 4. Tipo de contrato
             const rawTipo = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode'] || findDeep(entry, 'cbc:TypeCode'));
-            const tipoContrato = mapTipoContrato(rawTipo, entry);
+            const tipoContrato = mapTipoContrato(rawTipo);
 
-            // 5. Código CPV
             const codigoCpv = extractText(
                 project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode'] ||
                 findDeep(entry, 'cbc:ItemClassificationCode')
             );
 
-            // 6. Fecha fin de oferta
             const fechaFin = extractText(
                 status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
                 findDeep(entry, 'TenderSubmissionDeadlinePeriod')?.['cbc:EndDate'] ||
                 findDeep(entry, 'cbc:EndDate')
             );
 
-            // 7. Ubicación combinada (Provincia + Localidad/Pueblo)
+            // Extracción combinada de Provincia y Localidad
             const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || findDeep(entry, 'cac:PostalAddress');
             const provinciaOficial = extractText(addressNode?.['cbc:CountrySubentity']);
             const localidadOficial = extractText(addressNode?.['cbc:CityName']);
@@ -176,13 +164,11 @@ async function ejecutarCaptura() {
                     ? provinciaOficial 
                     : `${provinciaOficial} (${localidadOficial})`;
             } else {
-                ubicacionFinal = provinciaOficial || localidadOficial || 'No especificada';
+                ubicacionFinal = provinciaOficial || localidadOficial || null;
             }
 
-            // 8. Estado oficial
             const estado = extractText(status['cbc:ContractFolderStatusCode'] || findDeep(entry, 'cbc:ContractFolderStatusCode')) || 'Publicada';
 
-            // 9. URL de la licitación
             let urlLicitacion = '';
             if (entry.link) {
                 if (Array.isArray(entry.link)) {
@@ -193,7 +179,6 @@ async function ejecutarCaptura() {
                 }
             }
 
-            // AQUÍ ES DONDE SE HACE EL PUSH AL ARRAY
             if (numExpediente) {
                 licitacionesParaGuardar.push({
                     num_expediente: numExpediente,
@@ -202,29 +187,20 @@ async function ejecutarCaptura() {
                     tipo_contrato: tipoContrato,
                     codigo_cpv: codigoCpv,
                     fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
-                    provincia: ubicacionFinal, // <--- Aquí guardamos la provincia y el pueblo juntos
+                    provincia: ubicacionFinal,
                     estado_oficial: estado,
                     url_licitacion: urlLicitacion,
                     origen: 'PLACSP'
                 });
             }
         }
-        if (licitacionesParaGuardar.length === 0) {
-            console.log("No hay licitaciones válidas para insertar en este lote.");
-            return;
-        }
+
+        if (licitacionesParaGuardar.length === 0) return;
 
         const tamanoLote = 500;
         for (let i = 0; i < licitacionesParaGuardar.length; i += tamanoLote) {
             const lote = licitacionesParaGuardar.slice(i, i + tamanoLote);
-
-            const { error } = await supabase
-                .from('licitaciones')
-                .upsert(lote, { onConflict: 'num_expediente' });
-
-            if (error) {
-                console.error(`Error al guardar el lote ${i} en Supabase:`, error);
-            }
+            await supabase.from('licitaciones').upsert(lote, { onConflict: 'num_expediente' });
         }
 
         console.log(`¡Sincronización perfecta completada! ${licitacionesParaGuardar.length} registros enriquecidos.`);
