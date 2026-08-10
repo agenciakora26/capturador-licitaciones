@@ -35,6 +35,24 @@ function extractText(node) {
     return null;
 }
 
+// Mapeo de códigos numéricos oficiales a nombres legibles de tipos de contrato
+function mapTipoContrato(code) {
+    if (!code) return null;
+    const c = String(code).trim();
+    const mapa = {
+        '1': 'Obras',
+        '2': 'Concesión de obras',
+        '3': 'Concesión de servicios',
+        '21': 'Suministros',
+        '31': 'Servicios',
+        '40': 'Privado',
+        'Obras': 'Obras',
+        'Suministros': 'Suministros',
+        'Servicios': 'Servicios'
+    };
+    return mapa[c] || c;
+}
+
 async function ejecutarCaptura() {
     console.log("Iniciando descarga del feed ATOM oficial...");
 
@@ -66,13 +84,14 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros con extracción avanzada...`);
+        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros...`);
 
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
+            const processNode = status['cac:TenderingProcess'] || {};
 
             // 1. Número de expediente
             const numExpediente = extractText(
@@ -103,16 +122,19 @@ async function ejecutarCaptura() {
                 }
             }
 
-            // 4. Tipo de contrato
-            const tipoContrato = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode']);
+            // 4. Tipo de contrato (con mapeo de códigos)
+            const rawTipo = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode']);
+            const tipoContrato = mapTipoContrato(rawTipo);
 
             // 5. Código CPV
             const codigoCpv = extractText(project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode']);
 
-            // 6. Fecha fin de oferta
+            // 6. Fecha fin de oferta (ampliando rutas de búsqueda)
             const fechaFin = extractText(
                 status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
-                entry['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate']
+                processNode['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
+                entry['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
+                status['cbc:EndDate']
             );
 
             // 7. Provincia
