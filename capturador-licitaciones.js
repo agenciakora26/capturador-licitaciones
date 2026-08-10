@@ -14,17 +14,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-// URL oficial del feed ATOM
-const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
-
-// Usamos el proxy alternativo de CodeTabs para evitar el 403 en GitHub Actions
-const PROXY_URL = "https://api.codetabs.com/v1/proxy?url=" + encodeURIComponent(ATOM_URL);
+// URL oficial directa del feed ATOM de datos abiertos de la PLACSP
+const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del feed ATOM a través del proxy CodeTabs...");
+    console.log("Iniciando descarga del feed ATOM oficial...");
 
     try {
-        const response = await fetch(PROXY_URL, {
+        const response = await fetch(ATOM_URL, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                 'Accept': 'application/atom+xml,application/xml,text/xml,*/*'
@@ -32,13 +29,13 @@ async function ejecutarCaptura() {
         });
 
         if (!response.ok) {
-            throw new Error(`Error HTTP del proxy: ${response.status} - ${response.statusText}`);
+            throw new Error(`Error HTTP del servidor oficial: ${response.status} - ${response.statusText}`);
         }
 
         const xmlData = await response.text();
 
         if (!xmlData || xmlData.trim().startsWith('<html') || xmlData.includes('Redireccionando')) {
-            throw new Error("El contenido recibido a través del proxy no es un XML válido (posible bloqueo).");
+            throw new Error("El contenido recibido no es un XML válido (posible bloqueo o redirección).");
         }
 
         console.log("Parseando contenido XML del feed...");
