@@ -1,6 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
 import { XMLParser } from 'fast-xml-parser';
-import AdmZip from 'adm-zip';
 import ws from 'ws';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -15,21 +14,17 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-// URL directa alternativa de sindicación oficial
-const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
+// URL del feed ATOM oficial (este endpoint sí permite el acceso directo sin bloqueos de ZIP)
+const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga mediante cliente HTTP avanzado...");
+    console.log("Iniciando descarga del feed ATOM oficial...");
 
     try {
-        // Realizamos la petición simulando un cliente de nodo puro con redirección automática
-        const response = await fetch(ZIP_URL, {
-            redirect: 'follow',
+        const response = await fetch(ATOM_URL, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                'Accept': 'application/zip,application/octet-stream,*/*',
-                'Accept-Language': 'es-ES,es;q=0.9',
-                'Cache-Control': 'no-cache'
+                'Accept': 'application/atom+xml,application/xml,text/xml,*/*'
             }
         });
 
@@ -37,43 +32,19 @@ async function ejecutarCaptura() {
             throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
+        const xmlData = await response.text();
 
-        // Verificación estricta de formato ZIP (Cabecera PK: 0x50 0x4B)
-        if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
-            const preview = buffer.toString('utf8', 0, 200).replace(/\n/g, ' ');
-            throw new Error(
-                `El servidor ha devuelto contenido HTML/Texto en lugar de un ZIP.\n` +
-                `Posible causa: Restricción temporal de IP en la pasarela del Ministerio.\n` +
-                `Cabecera recibida: ${preview}`
-            );
+        // Verificamos que no nos hayan devuelto HTML por seguridad
+        if (xmlData.trim().startsWith('<html') || xmlData.includes('Redireccionando')) {
+            throw new Error("El servidor ha bloqueado la petición devolviendo una página HTML.");
         }
 
-        console.log("¡Archivo ZIP descargado con éxito! Descomprimiendo...");
-        const zip = new AdmZip(buffer);
-        const zipEntries = zip.getEntries();
-
-        let xmlContent = "";
-        for (const entry of zipEntries) {
-            if (entry.entryName.endsWith('.atom') || entry.entryName.endsWith('.xml')) {
-                console.log(`Leyendo fichero interno: ${entry.entryName}`);
-                xmlContent = zip.readAsText(entry);
-                break;
-            }
-        }
-
-        if (!xmlContent) {
-            console.error("No se encontró ningún archivo XML o ATOM dentro del ZIP.");
-            return;
-        }
-
-        console.log("Parseando contenido XML...");
+        console.log("Parseando contenido XML del feed...");
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_"
         });
-        const jsonObj = parser.parse(xmlContent);
+        const jsonObj = parser.parse(xmlData);
 
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
@@ -83,10 +54,26 @@ async function ejecutarCaptura() {
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
-            const numExpediente = entry['cac-place-ext:ContractFolderStatus']?.['cbc:ContractFolderID'] || entry.id;
-            const objeto = entry.title?.['#text'] || entry.title || 'Sin objeto especificado';
-            const urlLicitacion = entry.link?.['@_href'] || '';
-            
+            const numExpediente = 
+                entry['cac-place-ext:ContractFolderStatus']?.['cbc:ContractFolderID'] || 
+                entry['cbc:ContractFolderID'] || 
+                entry.id;
+
+            const objeto = 
+                entry.title?.['#text'] || 
+                entry.title || 
+                'Sin objeto especificado';
+
+            let urlLicitacion = '';
+            if (entry.link) {
+                if (Array.isArray(entry.link)) {
+                    const linkObj = entry.link.find(l => l['@_rel'] === 'alternate' || !l['@_rel']) || entry.link[0];
+                    urlLicitacion = linkObj?.['@_href'] || '';
+                } else if (typeof entry.link === 'object') {
+                    urlLicitacion = entry.link['@_href'] || '';
+                }
+            }
+
             if (numExpediente) {
                 licitacionesParaGuardar.push({
                     num_expediente: String(numExpediente).trim(),
@@ -98,7 +85,7 @@ async function ejecutarCaptura() {
         }
 
         if (licitacionesParaGuardar.length === 0) {
-            console.log("No hay licitaciones válidas para insertar.");
+            console.log("No hay licitaciones válidas para insertar en este lote.");
             return;
         }
 
