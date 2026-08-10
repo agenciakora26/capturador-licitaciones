@@ -15,58 +15,49 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-const PORTAL_URL = "https://contrataciondelestado.es/wps/portal";
+// URL directa alternativa de sindicación oficial
 const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
 
 async function ejecutarCaptura() {
-    console.log("Iniciando conexión con el portal de contratación...");
+    console.log("Iniciando descarga mediante cliente HTTP avanzado...");
 
     try {
-        const baseHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'es-ES,es;q=0.9'
-        };
-
-        // PASO 1: Visitamos el portal para obtener la cookie de sesión (JSESSIONID) que exige WebSphere
-        console.log("Obteniendo sesión de WebSphere Portal...");
-        const portalRes = await fetch(PORTAL_URL, { headers: baseHeaders });
-        
-        const setCookieHeader = portalRes.headers.get('set-cookie') || '';
-        const cookies = setCookieHeader.split(',').map(c => c.split(';')[0]).join('; ');
-        
-        console.log("Sesión establecida correctamente. Procediendo a descargar el ZIP...");
-
-        // PASO 2: Descargamos el ZIP enviando las cookies de sesión obtenidas
+        // Realizamos la petición simulando un cliente de nodo puro con redirección automática
         const response = await fetch(ZIP_URL, {
+            redirect: 'follow',
             headers: {
-                ...baseHeaders,
-                'Cookie': cookies,
-                'Referer': PORTAL_URL
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                'Accept': 'application/zip,application/octet-stream,*/*',
+                'Accept-Language': 'es-ES,es;q=0.9',
+                'Cache-Control': 'no-cache'
             }
         });
 
         if (!response.ok) {
-            throw new Error(`Error HTTP del servidor: ${response.status} - ${response.statusText}`);
+            throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
         }
 
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        // Verificamos que sea un ZIP válido (debe empezar por los bytes "PK")
+        // Verificación estricta de formato ZIP (Cabecera PK: 0x50 0x4B)
         if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
-            const textPreview = buffer.toString('utf8', 0, 300);
-            throw new Error(`El servidor sigue bloqueando la descarga. Contenido recibido:\n${textPreview}`);
+            const preview = buffer.toString('utf8', 0, 200).replace(/\n/g, ' ');
+            throw new Error(
+                `El servidor ha devuelto contenido HTML/Texto en lugar de un ZIP.\n` +
+                `Posible causa: Restricción temporal de IP en la pasarela del Ministerio.\n` +
+                `Cabecera recibida: ${preview}`
+            );
         }
 
-        console.log("Descarga del ZIP completada con éxito. Descomprimiendo...");
+        console.log("¡Archivo ZIP descargado con éxito! Descomprimiendo...");
         const zip = new AdmZip(buffer);
         const zipEntries = zip.getEntries();
 
         let xmlContent = "";
         for (const entry of zipEntries) {
             if (entry.entryName.endsWith('.atom') || entry.entryName.endsWith('.xml')) {
-                console.log(`Procesando fichero interno: ${entry.entryName}`);
+                console.log(`Leyendo fichero interno: ${entry.entryName}`);
                 xmlContent = zip.readAsText(entry);
                 break;
             }
@@ -77,7 +68,7 @@ async function ejecutarCaptura() {
             return;
         }
 
-        console.log("Parseando contenido XML masivo...");
+        console.log("Parseando contenido XML...");
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_"
@@ -87,7 +78,7 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando...`);
+        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros...`);
 
         const licitacionesParaGuardar = [];
 
