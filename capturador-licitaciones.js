@@ -16,6 +16,25 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
 
+// Función auxiliar robusta para extraer texto limpio de cualquier nodo XML parseado
+function extractText(node) {
+    if (node === null || node === undefined) return null;
+    if (typeof node === 'string' || typeof node === 'number') return String(node).trim();
+    if (Array.isArray(node)) {
+        return node.length > 0 ? extractText(node[0]) : null;
+    }
+    if (typeof node === 'object') {
+        if (node['#text'] !== undefined) return String(node['#text']).trim();
+        for (const key of Object.keys(node)) {
+            if (!key.startsWith('@_')) {
+                const res = extractText(node[key]);
+                if (res !== null) return res;
+            }
+        }
+    }
+    return null;
+}
+
 async function ejecutarCaptura() {
     console.log("Iniciando descarga del feed ATOM oficial...");
 
@@ -47,7 +66,7 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros con detalle...`);
+        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros con extracción avanzada...`);
 
         const licitacionesParaGuardar = [];
 
@@ -56,78 +75,75 @@ async function ejecutarCaptura() {
             const project = status['cac:ProcurementProject'] || {};
 
             // 1. Número de expediente
-            const numExpediente = 
+            const numExpediente = extractText(
                 status['cbc:ContractFolderID'] || 
                 entry['cbc:ContractFolderID'] || 
-                entry.id;
+                entry.id
+            );
 
             // 2. Objeto del contrato
-            const objeto = 
+            const objeto = extractText(
                 project['cbc:Name'] || 
-                entry.title?.['#text'] || 
-                entry.title || 
-                'Sin objeto especificado';
+                status['cbc:Name'] || 
+                entry.title
+            ) || 'Sin objeto especificado';
 
             // 3. Presupuesto base
             let presupuesto = null;
-            const budgetNode = project['cbc:BudgetAmount'] || status['cbc:BudgetAmount'];
+            const budgetNode = project['cbc:BudgetAmount'] || status['cbc:BudgetAmount'] || project['cac:BudgetAmount'];
             if (budgetNode) {
-                const rawPresupuesto = typeof budgetNode === 'object' ? 
-                    (budgetNode['cbc:TaxExclusiveAmount'] || budgetNode['cbc:TotalAmount'] || budgetNode['#text']) : budgetNode;
-                if (rawPresupuesto) {
-                    presupuesto = parseFloat(rawPresupuesto) || null;
+                const rawVal = extractText(
+                    budgetNode['cbc:TaxExclusiveAmount'] || 
+                    budgetNode['cbc:TotalAmount'] || 
+                    budgetNode
+                );
+                if (rawVal) {
+                    const parsed = parseFloat(rawVal);
+                    if (!isNaN(parsed)) presupuesto = parsed;
                 }
             }
 
             // 4. Tipo de contrato
-            const tipoContrato = project['cbc:TypeCode'] || null;
+            const tipoContrato = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode']);
 
             // 5. Código CPV
-            let codigoCpv = null;
-            const cpvNode = project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode'];
-            if (cpvNode) {
-                codigoCpv = typeof cpvNode === 'object' ? (cpvNode['#text'] || null) : String(cpvNode);
-            }
+            const codigoCpv = extractText(project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode']);
 
             // 6. Fecha fin de oferta
-            let fechaFin = null;
-            const deadlineNode = status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'];
-            if (deadlineNode) {
-                fechaFin = typeof deadlineNode === 'object' ? (deadlineNode['#text'] || null) : String(deadlineNode);
-            }
+            const fechaFin = extractText(
+                status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
+                entry['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate']
+            );
 
             // 7. Provincia
-            let provincia = null;
             const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'];
-            if (addressNode) {
-                provincia = addressNode['cbc:CountrySubentity'] || addressNode['cbc:CityName'] || null;
-            }
+            const provincia = extractText(addressNode?.['cbc:CountrySubentity'] || addressNode?.['cbc:CityName']);
 
             // 8. Estado oficial
-            const estado = status['cbc:ContractFolderStatusCode'] || 'Publicada';
+            const estado = extractText(status['cbc:ContractFolderStatusCode']) || 'Publicada';
 
             // 9. URL de la licitación
             let urlLicitacion = '';
             if (entry.link) {
                 if (Array.isArray(entry.link)) {
                     const linkObj = entry.link.find(l => l['@_rel'] === 'alternate' || !l['@_rel']) || entry.link[0];
-                    urlLicitacion = linkObj?.['@_href'] || '';
+                    urlLicitacion = extractText(linkObj?.['@_href']) || '';
                 } else if (typeof entry.link === 'object') {
-                    urlLicitacion = entry.link['@_href'] || '';
+                    urlLicitacion = extractText(entry.link['@_href']) || '';
                 }
             }
 
             if (numExpediente) {
                 licitacionesParaGuardar.push({
-                    num_expediente: String(numExpediente).trim(),
-                    objeto_contrato: String(objeto).trim(),
+                    num_expediente: numExpediente,
+                    objeto_contrato: objeto,
                     presupuesto_base: presupuesto,
-                    tipo_contrato: tipoContrato ? String(tipoContrato).trim() : null,
-                    codigo_cpv: codigoCpv ? String(codigoCpv).trim() : null,
-                    fecha_fin_oferta: fechaFin ? String(fechaFin).trim() : null,
-                    provincia: provincia ? String(provincia).trim() : null,
-                    estado_oficial: String(estado).trim(),
-                    url_licitacion: String(urlLicitacion).trim(),
+                    tipo_contrato: tipoContrato,
+                    codigo_cpv: codigoCpv,
+                    fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
+                    provincia: provincia,
+                    estado_oficial: estado,
+                    url_licitacion: urlLicitacion,
                     origen: 'PLACSP'
                 });
             }
