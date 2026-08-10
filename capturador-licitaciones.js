@@ -17,11 +17,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 // URL oficial del feed ATOM
 const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
 
-// Usamos corsproxy.io para saltarnos el bloqueo de IP de GitHub Actions en el servidor del Ministerio
-const PROXY_URL = "https://corsproxy.io/?" + encodeURIComponent(ATOM_URL);
+// Usamos el proxy alternativo de CodeTabs para evitar el 403 en GitHub Actions
+const PROXY_URL = "https://api.codetabs.com/v1/proxy?url=" + encodeURIComponent(ATOM_URL);
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del feed ATOM a través del proxy seguro...");
+    console.log("Iniciando descarga del feed ATOM a través del proxy CodeTabs...");
 
     try {
         const response = await fetch(PROXY_URL, {
@@ -37,7 +37,6 @@ async function ejecutarCaptura() {
 
         const xmlData = await response.text();
 
-        // Verificación de seguridad por si el proxy devuelve una página de error
         if (!xmlData || xmlData.trim().startsWith('<html') || xmlData.includes('Redireccionando')) {
             throw new Error("El contenido recibido a través del proxy no es un XML válido (posible bloqueo).");
         }
