@@ -121,7 +121,7 @@ async function ejecutarCaptura() {
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
 
-            // 1. Número de expediente (Búsqueda profunda garantizada)
+            // 1. Número de expediente
             const numExpediente = extractText(
                 status['cbc:ContractFolderID'] || 
                 entry['cbc:ContractFolderID'] || 
@@ -137,7 +137,7 @@ async function ejecutarCaptura() {
                 entry.title
             ) || 'Sin objeto especificado';
 
-            // 3. Presupuesto base (Búsqueda profunda en montos)
+            // 3. Presupuesto base
             let presupuesto = null;
             const rawPresupuesto = findDeep(status, 'cbc:TaxExclusiveAmount') || 
                                    findDeep(status, 'cbc:TotalAmount') || 
@@ -152,13 +152,13 @@ async function ejecutarCaptura() {
             const rawTipo = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode'] || findDeep(entry, 'cbc:TypeCode'));
             const tipoContrato = mapTipoContrato(rawTipo, entry);
 
-            // 5. Código CPV (Búsqueda profunda de clasificación)
+            // 5. Código CPV
             const codigoCpv = extractText(
                 project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode'] ||
                 findDeep(entry, 'cbc:ItemClassificationCode')
             );
 
-            // 6. Fecha fin de oferta (Búsqueda profunda en plazos de presentación)
+            // 6. Fecha fin de oferta
             const fechaFin = extractText(
                 status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
                 findDeep(entry, 'TenderSubmissionDeadlinePeriod')?.['cbc:EndDate'] ||
@@ -172,7 +172,6 @@ async function ejecutarCaptura() {
 
             let ubicacionFinal = null;
             if (provinciaOficial && localidadOficial) {
-                // Si tenemos ambos, los unimos para que el filtro capture los dos
                 ubicacionFinal = provinciaOficial.toLowerCase() === localidadOficial.toLowerCase() 
                     ? provinciaOficial 
                     : `${provinciaOficial} (${localidadOficial})`;
@@ -194,6 +193,7 @@ async function ejecutarCaptura() {
                 }
             }
 
+            // AQUÍ ES DONDE SE HACE EL PUSH AL ARRAY
             if (numExpediente) {
                 licitacionesParaGuardar.push({
                     num_expediente: numExpediente,
@@ -202,14 +202,13 @@ async function ejecutarCaptura() {
                     tipo_contrato: tipoContrato,
                     codigo_cpv: codigoCpv,
                     fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
-                    provincia: provincia,
+                    provincia: ubicacionFinal, // <--- Aquí guardamos la provincia y el pueblo juntos
                     estado_oficial: estado,
                     url_licitacion: urlLicitacion,
                     origen: 'PLACSP'
                 });
             }
         }
-
         if (licitacionesParaGuardar.length === 0) {
             console.log("No hay licitaciones válidas para insertar en este lote.");
             return;
