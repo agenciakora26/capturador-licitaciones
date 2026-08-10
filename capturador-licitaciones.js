@@ -14,16 +14,17 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-// URL del feed ATOM oficial (este endpoint sí permite el acceso directo sin bloqueos de ZIP)
+// URL oficial del feed ATOM
 const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
-// Usando un proxy público de redirección para evitar el bloqueo directo de IP
-const PROXY_URL = "https://api.allorigins.win/raw?url=" + encodeURIComponent(ATOM_URL);
+
+// Usamos corsproxy.io para saltarnos el bloqueo de IP de GitHub Actions en el servidor del Ministerio
+const PROXY_URL = "https://corsproxy.io/?" + encodeURIComponent(ATOM_URL);
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del feed ATOM oficial...");
+    console.log("Iniciando descarga del feed ATOM a través del proxy seguro...");
 
     try {
-        const response = await fetch(ATOM_URL, {
+        const response = await fetch(PROXY_URL, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                 'Accept': 'application/atom+xml,application/xml,text/xml,*/*'
@@ -31,14 +32,14 @@ async function ejecutarCaptura() {
         });
 
         if (!response.ok) {
-            throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
+            throw new Error(`Error HTTP del proxy: ${response.status} - ${response.statusText}`);
         }
 
         const xmlData = await response.text();
 
-        // Verificamos que no nos hayan devuelto HTML por seguridad
-        if (xmlData.trim().startsWith('<html') || xmlData.includes('Redireccionando')) {
-            throw new Error("El servidor ha bloqueado la petición devolviendo una página HTML.");
+        // Verificación de seguridad por si el proxy devuelve una página de error
+        if (!xmlData || xmlData.trim().startsWith('<html') || xmlData.includes('Redireccionando')) {
+            throw new Error("El contenido recibido a través del proxy no es un XML válido (posible bloqueo).");
         }
 
         console.log("Parseando contenido XML del feed...");
