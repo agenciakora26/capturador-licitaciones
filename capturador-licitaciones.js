@@ -165,9 +165,20 @@ async function ejecutarCaptura() {
                 findDeep(entry, 'cbc:EndDate')
             );
 
-            // 7. Provincia
+            // 7. Ubicación combinada (Provincia + Localidad/Pueblo)
             const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || findDeep(entry, 'cac:PostalAddress');
-            const provincia = extractText(addressNode?.['cbc:CountrySubentity'] || addressNode?.['cbc:CityName'] || findDeep(entry, 'cbc:CityName'));
+            const provinciaOficial = extractText(addressNode?.['cbc:CountrySubentity']);
+            const localidadOficial = extractText(addressNode?.['cbc:CityName']);
+
+            let ubicacionFinal = null;
+            if (provinciaOficial && localidadOficial) {
+                // Si tenemos ambos, los unimos para que el filtro capture los dos
+                ubicacionFinal = provinciaOficial.toLowerCase() === localidadOficial.toLowerCase() 
+                    ? provinciaOficial 
+                    : `${provinciaOficial} (${localidadOficial})`;
+            } else {
+                ubicacionFinal = provinciaOficial || localidadOficial || 'No especificada';
+            }
 
             // 8. Estado oficial
             const estado = extractText(status['cbc:ContractFolderStatusCode'] || findDeep(entry, 'cbc:ContractFolderStatusCode')) || 'Publicada';
