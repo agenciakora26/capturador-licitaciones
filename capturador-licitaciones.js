@@ -153,16 +153,33 @@ async function ejecutarCaptura() {
                 findDeep(entry, 'cbc:EndDate')
             );
 
-            // Extracción combinada de Provincia y Localidad
-            const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || findDeep(entry, 'cac:PostalAddress');
-            const provinciaOficial = extractText(addressNode?.['cbc:CountrySubentity']);
-            const localidadOficial = extractText(addressNode?.['cbc:CityName']);
+           // 7. Extracción limpia y separada de Provincia y Localidad
+            const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || 
+                                project['cac:PostalAddress'] || 
+                                findDeep(status, 'cac:PostalAddress');
 
+            // Buscamos estrictamente la provincia (CountrySubentity) sin mezclarla con ciudades
+            let provinciaOficial = addressNode ? extractText(addressNode['cbc:CountrySubentity']) : null;
+            if (!provinciaOficial) {
+                // Si el nodo de dirección estándar no la tiene, buscamos la etiqueta de provincia a nivel general del status
+                provinciaOficial = findDeep(status, 'cbc:CountrySubentity');
+            }
+
+            // Buscamos estrictamente la localidad / municipio (CityName)
+            let localidadOficial = addressNode ? extractText(addressNode['cbc:CityName']) : null;
+            if (!localidadOficial) {
+                localidadOficial = findDeep(status, 'cbc:CityName');
+            }
+
+            // Formateamos la ubicación final de forma inteligente
             let ubicacionFinal = null;
             if (provinciaOficial && localidadOficial) {
-                ubicacionFinal = provinciaOficial.toLowerCase() === localidadOficial.toLowerCase() 
-                    ? provinciaOficial 
-                    : `${provinciaOficial} (${localidadOficial})`;
+                // Si la provincia y la localidad son iguales, o la localidad ya incluye la provincia, dejamos solo una
+                if (provinciaOficial.toLowerCase() === localidadOficial.toLowerCase()) {
+                    ubicacionFinal = provinciaOficial;
+                } else {
+                    ubicacionFinal = `${provinciaOficial} (${localidadOficial})`;
+                }
             } else {
                 ubicacionFinal = provinciaOficial || localidadOficial || null;
             }
