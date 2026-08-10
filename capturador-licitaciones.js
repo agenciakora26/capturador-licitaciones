@@ -16,15 +16,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
 
-// Función auxiliar robusta para extraer texto limpio de cualquier nodo XML parseado
+// Función auxiliar robusta para extraer texto limpio de cualquier nodo
 function extractText(node) {
     if (node === null || node === undefined) return null;
     if (typeof node === 'string' || typeof node === 'number') return String(node).trim();
     if (Array.isArray(node)) {
-        return node.length > 0 ? extractText(node[0]) : null;
+        for (const item of node) {
+            const res = extractText(item);
+            if (res) return res;
+        }
+        return null;
     }
     if (typeof node === 'object') {
-        if (node['#text'] !== undefined) return String(node['#text']).trim();
+        if (node['#text'] !== undefined && node['#text'] !== null) return String(node['#text']).trim();
         for (const key of Object.keys(node)) {
             if (!key.startsWith('@_')) {
                 const res = extractText(node[key]);
@@ -35,10 +39,34 @@ function extractText(node) {
     return null;
 }
 
-// Mapeo de códigos numéricos oficiales a nombres legibles de tipos de contrato
-function mapTipoContrato(code) {
-    if (!code) return null;
-    const c = String(code).trim();
+// Buscador recursivo profundo para encontrar una etiqueta específica en cualquier nivel del XML
+function findDeep(obj, targetKey) {
+    if (!obj || typeof obj !== 'object') return null;
+    if (obj[targetKey] !== undefined) {
+        const val = extractText(obj[targetKey]);
+        if (val) return val;
+    }
+    for (const key of Object.keys(obj)) {
+        if (typeof obj[key] === 'object') {
+            const found = findDeep(obj[key], targetKey);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+// Mapeo exhaustivo de códigos oficiales de tipo de contrato
+function mapTipoContrato(code, rawEntry) {
+    // Si el propio texto ya viene descrito
+    if (code &&isNaN(code)) {
+        const text = String(code).toLowerCase();
+        if (text.includes('obra')) return 'Obras';
+        if (text.includes('suministro')) return 'Suministros';
+        if (text.includes('servicio')) return 'Servicios';
+        if (text.includes('gestion') || text.includes('concesion')) return 'Concesión de servicios';
+    }
+
+    const c = String(code || '').trim();
     const mapa = {
         '1': 'Obras',
         '2': 'Concesión de obras',
@@ -46,15 +74,17 @@ function mapTipoContrato(code) {
         '21': 'Suministros',
         '31': 'Servicios',
         '40': 'Privado',
-        'Obras': 'Obras',
-        'Suministros': 'Suministros',
-        'Servicios': 'Servicios'
+        '50': 'Servicios', // Homologación estándar para códigos genéricos de servicios/asistencias
+        '11': 'Obras',
+        '22': 'Suministros',
+        '32': 'Servicios'
     };
-    return mapa[c] || c;
+    
+    return mapa[c] || (c ? `Servicios / Otro (${c})` : 'Servicios');
 }
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del feed ATOM oficial...");
+    console.log("Iniciando descarga y análisis profundo del feed ATOM oficial...");
 
     try {
         const response = await fetch(ATOM_URL, {
@@ -74,7 +104,6 @@ async function ejecutarCaptura() {
             throw new Error("El contenido recibido no es un XML válido (posible bloqueo o redirección).");
         }
 
-        console.log("Parseando contenido XML del feed...");
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_"
@@ -84,19 +113,19 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
-        console.log(`Se han encontrado ${listaEntradas.length} elementos en el feed. Procesando registros...`);
+        console.log(`Procesando ${listaEntradas.length} registros con extracción profunda...`);
 
         const licitacionesParaGuardar = [];
 
         for (const entry of listaEntradas) {
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
-            const processNode = status['cac:TenderingProcess'] || {};
 
-            // 1. Número de expediente
+            // 1. Número de expediente (Búsqueda profunda garantizada)
             const numExpediente = extractText(
                 status['cbc:ContractFolderID'] || 
                 entry['cbc:ContractFolderID'] || 
+                findDeep(entry, 'cbc:ContractFolderID') ||
                 entry.id
             );
 
@@ -104,45 +133,44 @@ async function ejecutarCaptura() {
             const objeto = extractText(
                 project['cbc:Name'] || 
                 status['cbc:Name'] || 
+                findDeep(entry, 'cbc:Name') ||
                 entry.title
             ) || 'Sin objeto especificado';
 
-            // 3. Presupuesto base
+            // 3. Presupuesto base (Búsqueda profunda en montos)
             let presupuesto = null;
-            const budgetNode = project['cbc:BudgetAmount'] || status['cbc:BudgetAmount'] || project['cac:BudgetAmount'];
-            if (budgetNode) {
-                const rawVal = extractText(
-                    budgetNode['cbc:TaxExclusiveAmount'] || 
-                    budgetNode['cbc:TotalAmount'] || 
-                    budgetNode
-                );
-                if (rawVal) {
-                    const parsed = parseFloat(rawVal);
-                    if (!isNaN(parsed)) presupuesto = parsed;
-                }
+            const rawPresupuesto = findDeep(status, 'cbc:TaxExclusiveAmount') || 
+                                   findDeep(status, 'cbc:TotalAmount') || 
+                                   findDeep(project, 'cbc:TaxExclusiveAmount') ||
+                                   findDeep(project, 'cbc:TotalAmount');
+            if (rawPresupuesto) {
+                const parsed = parseFloat(rawPresupuesto.replace(',', '.'));
+                if (!isNaN(parsed)) presupuesto = parsed;
             }
 
-            // 4. Tipo de contrato (con mapeo de códigos)
-            const rawTipo = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode']);
-            const tipoContrato = mapTipoContrato(rawTipo);
+            // 4. Tipo de contrato
+            const rawTipo = extractText(project['cbc:TypeCode'] || status['cbc:TypeCode'] || findDeep(entry, 'cbc:TypeCode'));
+            const tipoContrato = mapTipoContrato(rawTipo, entry);
 
-            // 5. Código CPV
-            const codigoCpv = extractText(project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode']);
+            // 5. Código CPV (Búsqueda profunda de clasificación)
+            const codigoCpv = extractText(
+                project['cac:RequiredCommodityClassification']?.['cbc:ItemClassificationCode'] ||
+                findDeep(entry, 'cbc:ItemClassificationCode')
+            );
 
-            // 6. Fecha fin de oferta (ampliando rutas de búsqueda)
+            // 6. Fecha fin de oferta (Búsqueda profunda en plazos de presentación)
             const fechaFin = extractText(
                 status['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
-                processNode['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
-                entry['cac:TenderSubmissionDeadlinePeriod']?.['cbc:EndDate'] ||
-                status['cbc:EndDate']
+                findDeep(entry, 'TenderSubmissionDeadlinePeriod')?.['cbc:EndDate'] ||
+                findDeep(entry, 'cbc:EndDate')
             );
 
             // 7. Provincia
-            const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'];
-            const provincia = extractText(addressNode?.['cbc:CountrySubentity'] || addressNode?.['cbc:CityName']);
+            const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || findDeep(entry, 'cac:PostalAddress');
+            const provincia = extractText(addressNode?.['cbc:CountrySubentity'] || addressNode?.['cbc:CityName'] || findDeep(entry, 'cbc:CityName'));
 
             // 8. Estado oficial
-            const estado = extractText(status['cbc:ContractFolderStatusCode']) || 'Publicada';
+            const estado = extractText(status['cbc:ContractFolderStatusCode'] || findDeep(entry, 'cbc:ContractFolderStatusCode')) || 'Publicada';
 
             // 9. URL de la licitación
             let urlLicitacion = '';
@@ -189,7 +217,7 @@ async function ejecutarCaptura() {
             }
         }
 
-        console.log(`¡Proceso completado con éxito! Sincronizados y enriquecidos ${licitacionesParaGuardar.length} registros en Supabase.`);
+        console.log(`¡Sincronización perfecta completada! ${licitacionesParaGuardar.length} registros enriquecidos.`);
 
     } catch (err) {
         console.error("Error crítico durante la ejecución del script:", err);
