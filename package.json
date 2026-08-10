@@ -1,0 +1,19 @@
+{
+  "name": "capturador-boja",
+  "version": "1.0.0",
+  "description": "Automatizador BOJA",
+  "main": "enviar-resumen.js",
+  "type": "module",
+  "scripts": {
+    "start": "node enviar-resumen.js"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "@supabase/supabase-js": "^2.0.0",
+    "cheerio": "^1.0.0",
+    "fast-xml-parser": "^4.3.6",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^3.11.174",
+    "resend": "^2.0.0"
+  }
+}
