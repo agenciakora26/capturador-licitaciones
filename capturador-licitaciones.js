@@ -18,10 +18,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
 
 async function ejecutarCaptura() {
-    // ... dentro de la función ejecutarCaptura ...
+    console.log("Iniciando descarga del archivo ZIP oficial con cabeceras simuladas...");
 
-        console.log("Iniciando descarga del archivo ZIP oficial con cabeceras simuladas...");
-
+    try {
         const response = await fetch(ZIP_URL, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -35,8 +34,6 @@ async function ejecutarCaptura() {
             }
         });
 
-        // ... resto del código igual ...
-
         if (!response.ok) {
             throw new Error(`Error HTTP del servidor: ${response.status} - ${response.statusText}`);
         }
@@ -44,7 +41,6 @@ async function ejecutarCaptura() {
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        // Verificación de seguridad: Un archivo ZIP válido siempre empieza por los bytes "PK" (0x50 0x4B)
         if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
             const textPreview = buffer.toString('utf8', 0, 300);
             throw new Error(`El servidor no ha devuelto un ZIP válido. Contenido recibido (posible bloqueo o HTML):\n${textPreview}`);
