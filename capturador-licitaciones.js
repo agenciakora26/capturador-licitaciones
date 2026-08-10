@@ -11,29 +11,38 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
     process.exit(1);
 }
 
-// Inicializamos Supabase pasando el transporte de WebSocket requerido para Node.js < 22
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-    realtime: {
-        transport: ws
-    }
+    realtime: { transport: ws }
 });
 
-// URL del fichero ZIP oficial de la Plataforma de Contratación del Sector Público
 const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del archivo ZIP oficial (esto puede tardar unos segundos debido al tamaño)...");
+    console.log("Iniciando descarga del archivo ZIP oficial...");
 
     try {
-        const response = await fetch(ZIP_URL);
+        // Añadimos User-Agent para evitar que la pasarela del ministerio bloquee el script
+        const response = await fetch(ZIP_URL, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/zip,application/octet-stream,*/*'
+            }
+        });
+
         if (!response.ok) {
-            throw new Error(`Error al descargar el ZIP: ${response.statusText}`);
+            throw new Error(`Error HTTP del servidor: ${response.status} - ${response.statusText}`);
         }
 
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        console.log("Descarga completada. Descomprimiendo archivo ZIP...");
+        // Verificación de seguridad: Un archivo ZIP válido siempre empieza por los bytes "PK" (0x50 0x4B)
+        if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+            const textPreview = buffer.toString('utf8', 0, 300);
+            throw new Error(`El servidor no ha devuelto un ZIP válido. Contenido recibido (posible bloqueo o HTML):\n${textPreview}`);
+        }
+
+        console.log("Descarga completada con éxito. Descomprimiendo archivo ZIP...");
         const zip = new AdmZip(buffer);
         const zipEntries = zip.getEntries();
 
