@@ -2,8 +2,8 @@ name: Capturar Licitaciones Diarias
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Se ejecuta todos los días a las 8:00 UTC (9:00 en España)
-  workflow_dispatch: # Permite darle al botón "Run workflow" manualmente cuando quieras
+    - cron: '0 8 * * *' # Todos los días a las 8:00 UTC (9:00 en España)
+  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña Actions
 
 jobs:
   run-scraper:
@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Configurar Node.js
-        uses: actions/action-setup@v3 # O usa actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
 
