@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { XMLParser } from 'fast-xml-parser';
+import AdmZip from 'adm-zip';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -11,26 +12,46 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// URL del feed ATOM oficial de la Plataforma de Contratación del Sector Público
-const ATOM_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.atom";
+// URL del fichero ZIP oficial de la Plataforma de Contratación del Sector Público
+const ZIP_URL = "https://contrataciondelestado.es/sindicacion/sindicacion64/licitacionesPerfilContratante3.zip";
 
 async function ejecutarCaptura() {
-    console.log("Iniciando descarga del archivo ATOM oficial...");
+    console.log("Iniciando descarga del archivo ZIP oficial (esto puede tardar unos segundos debido al tamaño)...");
 
     try {
-        const response = await fetch(ATOM_URL);
+        const response = await fetch(ZIP_URL);
         if (!response.ok) {
-            throw new Error(`Error al descargar el feed: ${response.statusText}`);
+            throw new Error(`Error al descargar el ZIP: ${response.statusText}`);
         }
 
-        const xmlData = await response.text();
-        
-        // Parseamos el XML a JSON utilizando fast-xml-parser
+        // Convertimos la respuesta binaria a un Buffer de Node.js
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        console.log("Descarga completada. Descomprimiendo archivo ZIP...");
+        const zip = new AdmZip(buffer);
+        const zipEntries = zip.getEntries();
+
+        let xmlContent = "";
+        for (const entry of zipEntries) {
+            if (entry.entryName.endsWith('.atom') || entry.entryName.endsWith('.xml')) {
+                console.log(`Procesando fichero interno: ${entry.entryName}`);
+                xmlContent = zip.readAsText(entry);
+                break;
+            }
+        }
+
+        if (!xmlContent) {
+            console.error("No se encontró ningún archivo XML o ATOM dentro del ZIP.");
+            return;
+        }
+
+        console.log("Parseando contenido XML masivo...");
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_"
         });
-        const jsonObj = parser.parse(xmlData);
+        const jsonObj = parser.parse(xmlContent);
 
         // Obtenemos la lista de entradas (licitaciones) del feed ATOM
         const entries = jsonObj.feed?.entry || [];
@@ -62,14 +83,19 @@ async function ejecutarCaptura() {
             return;
         }
 
-        // Inserción inteligente en Supabase (Upsert: si ya existe el expediente, lo actualiza; si no, lo crea)
-        const { data, error } = await supabase
-            .from('licitaciones')
-            .upsert(licitacionesParaGuardar, { onConflict: 'num_expediente' });
+        // Dividimos en lotes (chunks) de 500 para evitar saturar Supabase con miles de registros
+        const tamanoLote = 500;
+        for (let i = 0; i < licitacionesParaGuardar.length; i += tamanoLote) {
+            const lote = licitacionesParaGuardar.slice(i, i + tamanoLote);
 
-        if (error) {
-            console.error("Error al guardar en Supabase:", error);
-            process.exit(1);
+            // Inserción inteligente en Supabase (Upsert: si ya existe el expediente, lo actualiza; si no, lo crea)
+            const { error } = await supabase
+                .from('licitaciones')
+                .upsert(lote, { onConflict: 'num_expediente' });
+
+            if (error) {
+                console.error(`Error al guardar el lote ${i} en Supabase:`, error);
+            }
         }
 
         console.log(`¡Proceso completado con éxito! Sincronizados ${licitacionesParaGuardar.length} registros en Supabase.`);
