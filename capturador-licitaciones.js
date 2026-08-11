@@ -1,6 +1,7 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo con evasión de WAF y control de persistencia para PLACSP.
+ * Script definitivo para la captura de licitaciones de la PLACSP 
+ * siguiendo el estándar Atom (RFC 4287) y Paged Feeds (RFC 5005).
  */
 
 import fetch from 'node-fetch';
@@ -9,7 +10,9 @@ import fs from 'fs';
 import path from 'path';
 
 const STATE_FILE = path.resolve('./processed_ids.json');
-const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
+
+// URL inicial del canal de sindicación de la PLACSP
+const INITIAL_ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
 
 function loadProcessedIds() {
     try {
@@ -41,23 +44,21 @@ function getSubValue(obj, fieldName) {
     return '';
 }
 
-function getLinkHref(entry) {
+function getLinkHref(entry, relType = 'alternate') {
     if (!entry || !entry.link) return '';
     const links = Array.isArray(entry.link) ? entry.link : [entry.link];
-    const preferred = links.find(l => l && (l['@_rel'] === 'alternate' || !l['@_rel']));
+    const preferred = links.find(l => l && (l['@_rel'] === relType || (!l['@_rel'] && relType === 'alternate')));
     return preferred ? (preferred['@_href'] || '') : (links[0]['@_href'] || '');
 }
 
 function findEntriesRecursive(obj) {
     if (!obj || typeof obj !== 'object') return null;
-    
     if (obj.entry) {
         return Array.isArray(obj.entry) ? obj.entry : [obj.entry];
     }
     if (obj.item) {
         return Array.isArray(obj.item) ? obj.item : [obj.item];
     }
-
     for (const key of Object.keys(obj)) {
         if (typeof obj[key] === 'object' && obj[key] !== null) {
             const found = findEntriesRecursive(obj[key]);
@@ -67,94 +68,107 @@ function findEntriesRecursive(obj) {
     return null;
 }
 
+/**
+ * Obtiene el enlace a la siguiente página del feed (RFC 5005 - Paged Feeds).
+ */
+function getNextPageUrl(jsonObj) {
+    try {
+        let feed = jsonObj.feed;
+        if (!feed) {
+            const rootKey = Object.keys(jsonObj).find(k => k && k !== '?xml');
+            feed = rootKey ? jsonObj[rootKey] : null;
+        }
+        if (!feed || !feed.link) return null;
+        const links = Array.isArray(feed.link) ? feed.link : [feed.link];
+        const nextLink = links.find(l => l && l['@_rel'] === 'next');
+        return nextLink ? nextLink['@_href'] : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con la PLACSP mediante bypass de seguridad...`);
+    console.log(`[${new Date().toISOString()}] Conectando con los canales Atom de la PLACSP (RFC 4287 / RFC 5005)...`);
     
-    // Lista de endpoints o proxies alternativos si el principal responde con HTML bloqueado
-    const endpointsToTry = [
-        ATOM_URL,
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(ATOM_URL)}`
-    ];
+    let currentUrl = INITIAL_ATOM_URL;
+    let allEntries = [];
+    let pagesProcessed = 0;
+    const maxPages = 5; // Límite de seguridad para paginación diaria
 
-    let rawText = '';
+    const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: '@_',
+        removeNamespace: true
+    });
 
-    for (const url of endpointsToTry) {
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/atom+xml, application/xml, text/xml, */*'
+    };
+
+    while (currentUrl && pagesProcessed < maxPages) {
         try {
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept': 'application/atom+xml, application/xml, text/xml, */*',
-                    'Accept-Language': 'es-ES,es;q=0.9',
-                    'Cache-Control': 'no-cache'
-                },
-                redirect: 'follow'
-            });
+            console.log(`Consultando página [${pagesProcessed + 1}]: ${currentUrl}`);
+            const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
 
-            if (!response.ok) continue;
-
-            const text = await response.text();
-            if (text && !text.trim().toLowerCase().startsWith('<!doctype html>') && !text.includes('<html')) {
-                rawText = text;
+            if (!response.ok) {
+                console.error(`Error HTTP ${response.status} en la URL: ${currentUrl}`);
                 break;
             }
-        } catch (err) {
-            // Probar el siguiente endpoint en caso de fallo de red
-        }
-    }
 
-    if (!rawText) {
-        console.error('Error crítico: Todos los intentos de conexión fueron interceptados o bloqueados por el servidor.');
-        return [];
-    }
-
-    try {
-        const parser = new XMLParser({
-            ignoreAttributes: false,
-            attributeNamePrefix: '@_',
-            removeNamespace: true
-        });
-
-        const jsonObj = parser.parse(rawText);
-        const rawEntries = findEntriesRecursive(jsonObj);
-
-        if (!rawEntries || rawEntries.length === 0) {
-            console.log('Aviso: No se encontraron entradas en el feed Atom.');
-            return [];
-        }
-
-        const entries = Array.isArray(rawEntries) ? rawEntries : [rawEntries];
-        console.log(`Total de registros leídos en el feed actual: ${entries.length}`);
-
-        const processedIds = loadProcessedIds();
-        const nuevasLicitaciones = [];
-
-        for (const entry of entries) {
-            const entryId = getSubValue(entry, 'id') || getSubValue(entry, 'guid') || getLinkHref(entry);
-
-            if (entryId && !processedIds.has(entryId)) {
-                const licitacion = {
-                    id: entryId,
-                    title: getSubValue(entry, 'title'),
-                    updated: getSubValue(entry, 'updated') || getSubValue(entry, 'pubDate') || getSubValue(entry, 'published') || new Date().toISOString(),
-                    link: getLinkHref(entry) || getSubValue(entry, 'link'),
-                    summary: getSubValue(entry, 'summary') || getSubValue(entry, 'description')
-                };
-
-                nuevasLicitaciones.push(licitacion);
-                processedIds.add(entryId);
+            const rawText = await response.text();
+            if (rawText.trim().toLowerCase().startsWith('<!doctype html>') || rawText.includes('<html')) {
+                console.error('El servidor ha respondido con una página HTML en lugar del feed XML.');
+                break;
             }
+
+            const jsonObj = parser.parse(rawText);
+            const entries = findEntriesRecursive(jsonObj);
+
+            if (entries && entries.length > 0) {
+                allEntries = allEntries.concat(entries);
+            }
+
+            // Buscar si existe página siguiente según la especificación de Paged Feeds
+            const nextUrl = getNextPageUrl(jsonObj);
+            if (nextUrl && nextUrl !== currentUrl) {
+                currentUrl = nextUrl;
+                pagesProcessed++;
+            } else {
+                break;
+            }
+        } catch (error) {
+            console.error('Error durante el recorrido de paginación:', error.message);
+            break;
         }
-
-        saveProcessedIds(processedIds);
-
-        console.log(`Licitaciones nuevas detectadas: ${nuevasLicitaciones.length}`);
-        return nuevasLicitaciones;
-
-    } catch (error) {
-        console.error('Error crítico al parsear el XML:', error.message);
-        return [];
     }
+
+    console.log(`Total de entradas recopiladas en la ejecución: ${allEntries.length}`);
+
+    const processedIds = loadProcessedIds();
+    const nuevasLicitaciones = [];
+
+    for (const entry of allEntries) {
+        const entryId = getSubValue(entry, 'id') || getSubValue(entry, 'guid') || getLinkHref(entry);
+
+        if (entryId && !processedIds.has(entryId)) {
+            const licitacion = {
+                id: entryId,
+                title: getSubValue(entry, 'title'),
+                updated: getSubValue(entry, 'updated') || getSubValue(entry, 'pubDate') || getSubValue(entry, 'published') || new Date().toISOString(),
+                link: getLinkHref(entry, 'alternate') || getSubValue(entry, 'link'),
+                summary: getSubValue(entry, 'summary') || getSubValue(entry, 'description')
+            };
+
+            nuevasLicitaciones.push(licitacion);
+            processedIds.add(entryId);
+        }
+    }
+
+    saveProcessedIds(processedIds);
+
+    console.log(`Licitaciones nuevas reales detectadas: ${nuevasLicitaciones.length}`);
+    return nuevasLicitaciones;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
