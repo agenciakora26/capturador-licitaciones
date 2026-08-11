@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo con gestión de cookies y simulación de navegador para la PLACSP.
+ * Script definitivo con evasión de WAF y control de persistencia para PLACSP.
  */
 
 import fetch from 'node-fetch';
@@ -10,7 +10,6 @@ import path from 'path';
 
 const STATE_FILE = path.resolve('./processed_ids.json');
 const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
-const PORTAL_URL = 'https://contrataciondelestado.es/wps/portal/sindicacion';
 
 function loadProcessedIds() {
     try {
@@ -69,64 +68,47 @@ function findEntriesRecursive(obj) {
 }
 
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sesión y conectando con la PLACSP...`);
+    console.log(`[${new Date().toISOString()}] Conectando con la PLACSP mediante bypass de seguridad...`);
     
+    // Lista de endpoints o proxies alternativos si el principal responde con HTML bloqueado
+    const endpointsToTry = [
+        ATOM_URL,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(ATOM_URL)}`
+    ];
+
+    let rawText = '';
+
+    for (const url of endpointsToTry) {
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Accept': 'application/atom+xml, application/xml, text/xml, */*',
+                    'Accept-Language': 'es-ES,es;q=0.9',
+                    'Cache-Control': 'no-cache'
+                },
+                redirect: 'follow'
+            });
+
+            if (!response.ok) continue;
+
+            const text = await response.text();
+            if (text && !text.trim().toLowerCase().startsWith('<!doctype html>') && !text.includes('<html')) {
+                rawText = text;
+                break;
+            }
+        } catch (err) {
+            // Probar el siguiente endpoint en caso de fallo de red
+        }
+    }
+
+    if (!rawText) {
+        console.error('Error crítico: Todos los intentos de conexión fueron interceptados o bloqueados por el servidor.');
+        return [];
+    }
+
     try {
-        const browserHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-User': '?1',
-            'Sec-Fetch-Dest': 'document'
-        };
-
-        // 1. Petición inicial al portal para obtener cookies de sesión y superar filtros WAF
-        const portalResponse = await fetch(PORTAL_URL, {
-            method: 'GET',
-            headers: browserHeaders,
-            redirect: 'follow'
-        });
-
-        let cookies = '';
-        const setCookieHeader = portalResponse.headers.raw ? portalResponse.headers.raw()['set-cookie'] : null;
-        if (setCookieHeader) {
-            cookies = setCookieHeader.map(cookie => cookie.split(';')[0]).join('; ');
-        }
-
-        // 2. Petición al feed Atom incorporando las cookies de sesión obtenidas
-        const feedHeaders = {
-            ...browserHeaders,
-            'Accept': 'application/atom+xml, application/xml, text/xml, */*',
-            'Sec-Fetch-Site': 'same-origin'
-        };
-
-        if (cookies) {
-            feedHeaders['Cookie'] = cookies;
-        }
-
-        const response = await fetch(ATOM_URL, {
-            method: 'GET',
-            headers: feedHeaders,
-            redirect: 'follow'
-        });
-
-        if (!response.ok) {
-            throw new Error(`Error en la respuesta HTTP: ${response.status} - ${response.statusText}`);
-        }
-
-        const rawText = await response.text();
-
-        if (rawText.trim().toLowerCase().startsWith('<!doctype html') || rawText.includes('<html')) {
-            throw new Error('El servidor de la PLACSP ha respondido con una página HTML (bloqueo de seguridad activo).');
-        }
-
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: '@_',
@@ -170,7 +152,7 @@ async function fetchLicitaciones() {
         return nuevasLicitaciones;
 
     } catch (error) {
-        console.error('Error crítico durante la captura de licitaciones:', error.message);
+        console.error('Error crítico al parsear el XML:', error.message);
         return [];
     }
 }
