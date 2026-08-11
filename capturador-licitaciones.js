@@ -4,12 +4,11 @@
  * con Supabase utilizando el feed Atom oficial de OpenPLACSP.
  */
 
-import fetch from 'node-fetch';
 import { XMLParser } from 'fast-xml-parser';
 import { createClient } from '@supabase/supabase-js';
+import ws from 'ws';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-// Se corrige el orden para que lea correctamente SUPABASE_KEY del workflow
 const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -17,9 +16,12 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
     process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Configuración de Supabase compatible con Node.js 20 utilizando ws
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false },
+    realtime: { transport: ws }
+});
 
-// URL oficial del Atom de datos abiertos de la PLACSP
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
 function getSubValue(obj, fieldName) {
@@ -93,6 +95,7 @@ async function sincronizarLicitaciones() {
     while (currentUrl && pagesProcessed < maxPages) {
         try {
             console.log(`Consultando página [${pagesProcessed + 1}]: ${currentUrl}`);
+            // Usando el fetch nativo global de Node.js 20
             const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
 
             if (!response.ok) {
