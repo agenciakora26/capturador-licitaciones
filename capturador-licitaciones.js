@@ -110,8 +110,25 @@ async function ejecutarCaptura() {
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
         const licitacionesParaGuardar = [];
+        
+        // Definimos el filtro de fecha: por ejemplo, solo elementos de las últimas 24-48 horas o del día actual
+        // Para asegurar que no perdemos nada si hay un desfase de horas, filtramos elementos actualizados recientemente
+        const ahora = new Date();
+        const limiteAntiguedadMs = 36 * 60 * 60 * 1000; // Margen de 36 horas para capturar las de hoy y últimas de ayer
 
         for (const entry of listaEntradas) {
+            // Extraer fecha de actualización/publicación del feed ATOM
+            const rawFechaPub = extractText(entry.updated || entry.published);
+            if (rawFechaPub) {
+                const fechaPub = new Date(rawFechaPub);
+                if (!isNaN(fechaPub.getTime())) {
+                    // Descartar si es más antiguo que el margen establecido
+                    if ((ahora.getTime() - fechaPub.getTime()) > limiteAntiguedadMs) {
+                        continue; 
+                    }
+                }
+            }
+
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
 
@@ -153,28 +170,22 @@ async function ejecutarCaptura() {
                 findDeep(entry, 'cbc:EndDate')
             );
 
-           // 7. Extracción limpia y separada de Provincia y Localidad
             const addressNode = status['cac-place-ext:LocatedContractingParty']?.['cac:Party']?.['cac:PostalAddress'] || 
                                 project['cac:PostalAddress'] || 
                                 findDeep(status, 'cac:PostalAddress');
 
-            // Buscamos estrictamente la provincia (CountrySubentity) sin mezclarla con ciudades
             let provinciaOficial = addressNode ? extractText(addressNode['cbc:CountrySubentity']) : null;
             if (!provinciaOficial) {
-                // Si el nodo de dirección estándar no la tiene, buscamos la etiqueta de provincia a nivel general del status
                 provinciaOficial = findDeep(status, 'cbc:CountrySubentity');
             }
 
-            // Buscamos estrictamente la localidad / municipio (CityName)
             let localidadOficial = addressNode ? extractText(addressNode['cbc:CityName']) : null;
             if (!localidadOficial) {
                 localidadOficial = findDeep(status, 'cbc:CityName');
             }
 
-            // Formateamos la ubicación final de forma inteligente
             let ubicacionFinal = null;
             if (provinciaOficial && localidadOficial) {
-                // Si la provincia y la localidad son iguales, o la localidad ya incluye la provincia, dejamos solo una
                 if (provinciaOficial.toLowerCase() === localidadOficial.toLowerCase()) {
                     ubicacionFinal = provinciaOficial;
                 } else {
@@ -203,8 +214,7 @@ async function ejecutarCaptura() {
                     presupuesto_base: presupuesto,
                     tipo_contrato: tipoContrato,
                     codigo_cpv: codigoCpv,
-                    fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
-                    provincia: ubicacionFinal,
+                    fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,provincia: ubicacionFinal,
                     estado_oficial: estado,
                     url_licitacion: urlLicitacion,
                     origen: 'PLACSP'
@@ -212,7 +222,10 @@ async function ejecutarCaptura() {
             }
         }
 
-        if (licitacionesParaGuardar.length === 0) return;
+        if (licitacionesParaGuardar.length === 0) {
+            console.log("No se han encontrado nuevas licitaciones en el periodo analizado.");
+            return;
+        }
 
         const tamanoLote = 500;
         for (let i = 0; i < licitacionesParaGuardar.length; i += tamanoLote) {
@@ -220,7 +233,7 @@ async function ejecutarCaptura() {
             await supabase.from('licitaciones').upsert(lote, { onConflict: 'num_expediente' });
         }
 
-        console.log(`¡Sincronización perfecta completada! ${licitacionesParaGuardar.length} registros enriquecidos.`);
+        console.log(`¡Sincronización completada! ${licitacionesParaGuardar.length} nuevas licitaciones procesadas.`);
 
     } catch (err) {
         console.error("Error crítico durante la ejecución del script:", err);
