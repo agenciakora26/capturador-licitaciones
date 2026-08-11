@@ -9,7 +9,8 @@ import { XMLParser } from 'fast-xml-parser';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+// Se corrige el orden para que lea correctamente SUPABASE_KEY del workflow
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.error('Error crítico: Faltan las variables de entorno de Supabase (SUPABASE_URL y SUPABASE_KEY).');
@@ -76,7 +77,7 @@ async function sincronizarLicitaciones() {
     let currentUrl = INITIAL_ATOM_URL;
     let allEntries = [];
     let pagesProcessed = 0;
-    const maxPages = 30; // Límite de seguridad robusto para la paginación
+    const maxPages = 30;
 
     const parser = new XMLParser({
         ignoreAttributes: false,
@@ -138,7 +139,6 @@ async function sincronizarLicitaciones() {
         const link = getLinkHref(entry, 'alternate') || getSubValue(entry, 'link');
         const summary = getSubValue(entry, 'summary') || getSubValue(entry, 'description');
 
-        // Consultar el registro existente en Supabase para validar la fecha de actualización
         const { data: existing, error: selectError } = await supabase
             .from('licitaciones')
             .select('id, updated')
@@ -151,7 +151,6 @@ async function sincronizarLicitaciones() {
         }
 
         if (!existing) {
-            // Registro nuevo -> INSERT
             const { error: insertError } = await supabase
                 .from('licitaciones')
                 .insert([{
@@ -169,12 +168,10 @@ async function sincronizarLicitaciones() {
                 stats.inserted++;
             }
         } else {
-            // Registro existente -> Validar si la versión es más reciente
             const existingUpdated = new Date(existing.updated).getTime();
             const incomingUpdated = new Date(updated).getTime();
 
             if (incomingUpdated > existingUpdated) {
-                // Actualización detectada -> UPDATE
                 const { error: updateError } = await supabase
                     .from('licitaciones')
                     .update({
@@ -191,7 +188,6 @@ async function sincronizarLicitaciones() {
                     stats.updated++;
                 }
             } else {
-                // Sin modificaciones -> Idempotente / SKIP
                 stats.skipped++;
             }
         }
