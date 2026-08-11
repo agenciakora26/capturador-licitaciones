@@ -1,7 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script completo para la captura y filtrado diario de licitaciones de la PLACSP,
- * evitando duplicidades mediante control de estado persistente.
+ * Script adaptado para tolerar prefijos de namespaces en XML y evitar duplicidades.
  */
 
 import fetch from 'node-fetch';
@@ -9,16 +8,9 @@ import { XMLParser } from 'fast-xml-parser';
 import fs from 'fs';
 import path from 'path';
 
-// Archivo local para almacenar los IDs ya procesados y evitar reintentos estáticos
 const STATE_FILE = path.resolve('./processed_ids.json');
-
-// URL oficial del feed Atom de la PLACSP (sindicación general actualizada)
 const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
 
-/**
- * Carga los IDs previamente procesados desde el disco.
- * @returns {Set<string>} Conjunto de IDs únicos.
- */
 function loadProcessedIds() {
     try {
         if (fs.existsSync(STATE_FILE)) {
@@ -31,10 +23,6 @@ function loadProcessedIds() {
     return new Set();
 }
 
-/**
- * Guarda el conjunto actualizado de IDs procesados en el disco.
- * @param {Set<string>} processedSet 
- */
 function saveProcessedIds(processedSet) {
     try {
         const arrayData = Array.from(processedSet);
@@ -45,9 +33,35 @@ function saveProcessedIds(processedSet) {
 }
 
 /**
- * Realiza la petición HTTP al feed Atom, parsea el XML y filtra las licitaciones nuevas.
- * @returns {Promise<Array>} Lista de nuevas licitaciones detectadas.
+ * Busca recursivamente o por sufijo una etiqueta ignorando prefijos de namespaces (ej. atom:feed -> feed)
  */
+function findNodeBySuffix(obj, suffix) {
+    if (!obj || typeof obj !== 'object') return null;
+    const key = Object.keys(obj).find(k => k === suffix || k.endsWith(':' + suffix));
+    return key ? obj[key] : null;
+}
+
+function getSubValue(obj, fieldName) {
+    const val = findNodeBySuffix(obj, fieldName);
+    if (!val) return '';
+    if (typeof val === 'string' || typeof val === 'number') return String(val);
+    if (val['#text']) return String(val['#text']);
+    return '';
+}
+
+function getLinkHref(entry) {
+    const linkNode = findNodeBySuffix(entry, 'link');
+    if (!linkNode) return '';
+    if (Array.isArray(linkNode)) {
+        const preferred = linkNode.find(l => l['@_rel'] === 'alternate' || !l['@_rel']);
+        return preferred ? (preferred['@_href'] || '') : (linkNode[0]['@_href'] || '');
+    }
+    if (typeof linkNode === 'object') {
+        return linkNode['@_href'] || '';
+    }
+    return '';
+}
+
 async function fetchLicitaciones() {
     console.log(`[${new Date().toISOString()}] Conectando con el feed Atom de la PLACSP...`);
     
@@ -65,7 +79,6 @@ async function fetchLicitaciones() {
 
         const xmlData = await response.text();
 
-        // Configuración del parser XML optimizada para feeds Atom/CODICE
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: '@_'
@@ -73,31 +86,36 @@ async function fetchLicitaciones() {
 
         const jsonObj = parser.parse(xmlData);
         
-        // Identificar el elemento raíz del feed Atom
-        const feed = jsonObj.feed || jsonObj['atom:feed'];
-        if (!feed || !feed.entry) {
-            console.log('Aviso: No se encontraron entradas en el feed Atom en esta ejecución.');
+        // Localizar el feed independientemente del prefijo XML
+        const feed = findNodeBySuffix(jsonObj, 'feed');
+        if (!feed) {
+            console.log('Aviso: No se encontró el nodo raíz del feed en la respuesta.');
             return [];
         }
 
-        // Asegurar que 'entry' sea siempre un array independientemente de la cantidad de elementos
-        const entries = Array.isArray(feed.entry) ? feed.entry : [feed.entry];
+        // Localizar las entradas independientemente del prefijo XML
+        const rawEntries = findNodeBySuffix(feed, 'entry');
+        if (!rawEntries) {
+            console.log('Aviso: No se encontraron entradas de licitación en el feed.');
+            return [];
+        }
+
+        const entries = Array.isArray(rawEntries) ? rawEntries : [rawEntries];
         console.log(`Total de registros leídos en el feed actual: ${entries.length}`);
 
         const processedIds = loadProcessedIds();
         const nuevasLicitaciones = [];
 
         for (const entry of entries) {
-            // Extracción de un identificador único robusto (ID de Atom o enlace principal)
-            const entryId = entry.id || (entry.link && entry.link['@_href']) || null;
+            const entryId = getSubValue(entry, 'id') || getLinkHref(entry);
 
             if (entryId && !processedIds.has(entryId)) {
                 const licitacion = {
                     id: entryId,
-                    title: typeof entry.title === 'object' ? (entry.title['#text'] || JSON.stringify(entry.title)) : entry.title,
-                    updated: entry.updated || entry.published || new Date().toISOString(),
-                    link: entry.link && entry.link['@_href'] ? entry.link['@_href'] : (typeof entry.link === 'string' ? entry.link : ''),
-                    summary: typeof entry.summary === 'object' ? (entry.summary['#text'] || '') : (entry.summary || '')
+                    title: getSubValue(entry, 'title'),
+                    updated: getSubValue(entry, 'updated') || getSubValue(entry, 'published') || new Date().toISOString(),
+                    link: getLinkHref(entry),
+                    summary: getSubValue(entry, 'summary')
                 };
 
                 nuevasLicitaciones.push(licitacion);
@@ -105,10 +123,9 @@ async function fetchLicitaciones() {
             }
         }
 
-        // Persistir el estado actualizado para futuras ejecuciones diarias
         saveProcessedIds(processedIds);
 
-        console.log(`Licitaciones nuevas reales detectadas tras filtrar el histórico: ${nuevasLicitaciones.length}`);
+        console.log(`Licitaciones nuevas reales detectadas: ${nuevasLicitaciones.length}`);
         return nuevasLicitaciones;
 
     } catch (error) {
@@ -117,14 +134,9 @@ async function fetchLicitaciones() {
     }
 }
 
-// Ejecución directa por consola
 if (import.meta.url === `file://${process.argv[1]}`) {
     fetchLicitaciones().then(nuevas => {
-        if (nuevas.length > 0) {
-            console.log('Detalle de las licitaciones capturadas:', JSON.stringify(nuevas, null, 2));
-        } else {
-            console.log('Sin novedades: todos los registros del feed ya habían sido procesados previamente.');
-        }
+        console.log('Detalle del resultado:', JSON.stringify(nuevas, null, 2));
     });
 }
 
