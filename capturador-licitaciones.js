@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo con limpieza automática de namespaces para PLACSP.
+ * Script definitivo con búsqueda tolerante de entradas para la PLACSP.
  */
 
 import fetch from 'node-fetch';
@@ -44,12 +44,12 @@ function getSubValue(obj, fieldName) {
 function getLinkHref(entry) {
     if (!entry || !entry.link) return '';
     const links = Array.isArray(entry.link) ? entry.link : [entry.link];
-    const preferred = links.find(l => l['@_rel'] === 'alternate' || !l['@_rel']);
+    const preferred = links.find(l => l && (l['@_rel'] === 'alternate' || !l['@_rel']));
     return preferred ? (preferred['@_href'] || '') : (links[0]['@_href'] || '');
 }
 
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con el feed Atom de la PLACSP...`);
+    console.log(`[${new Date().toISOString()}] Conectando con el feed de la PLACSP...`);
     
     try {
         const response = await fetch(ATOM_URL, {
@@ -65,7 +65,6 @@ async function fetchLicitaciones() {
 
         const xmlData = await response.text();
 
-        // removeNamespace: true elimina cualquier prefijo XML (ej. atom:, ns2:) automáticamente
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: '@_',
@@ -74,10 +73,10 @@ async function fetchLicitaciones() {
 
         const jsonObj = parser.parse(xmlData);
         
-        // Obtener el nodo raíz (feed) de forma segura
-        let feed = jsonObj.feed;
+        // Obtener el nodo raíz de forma segura
+        let feed = jsonObj.feed || jsonObj.rss || jsonObj.channel;
         if (!feed) {
-            const rootKey = Object.keys(jsonObj).find(k => k !== '?xml');
+            const rootKey = Object.keys(jsonObj).find(k => k && k !== '?xml');
             feed = rootKey ? jsonObj[rootKey] : null;
         }
 
@@ -86,9 +85,21 @@ async function fetchLicitaciones() {
             return [];
         }
 
-        const rawEntries = feed.entry;
+        // Búsqueda tolerante de entradas (soporta <entry>, <item> o contenedores anidados)
+        let rawEntries = feed.entry || feed.item;
         if (!rawEntries) {
-            console.log('Aviso: No se encontraron entradas de licitación en el feed.');
+            const possibleKey = Object.keys(feed).find(k => {
+                const val = feed[k];
+                return Array.isArray(val) || (val && typeof val === 'object' && (val.entry || val.item));
+            });
+            if (possibleKey) {
+                const container = feed[possibleKey];
+                rawEntries = Array.isArray(container) ? container : (container.entry || container.item);
+            }
+        }
+
+        if (!rawEntries) {
+            console.log('Aviso: No se encontraron entradas de licitación. Estructura de claves raíz detectada:', Object.keys(feed));
             return [];
         }
 
@@ -99,15 +110,15 @@ async function fetchLicitaciones() {
         const nuevasLicitaciones = [];
 
         for (const entry of entries) {
-            const entryId = getSubValue(entry, 'id') || getLinkHref(entry);
+            const entryId = getSubValue(entry, 'id') || getSubValue(entry, 'guid') || getLinkHref(entry);
 
             if (entryId && !processedIds.has(entryId)) {
                 const licitacion = {
                     id: entryId,
                     title: getSubValue(entry, 'title'),
-                    updated: getSubValue(entry, 'updated') || getSubValue(entry, 'published') || new Date().toISOString(),
-                    link: getLinkHref(entry),
-                    summary: getSubValue(entry, 'summary')
+                    updated: getSubValue(entry, 'updated') || getSubValue(entry, 'pubDate') || getSubValue(entry, 'published') || new Date().toISOString(),
+                    link: getLinkHref(entry) || getSubValue(entry, 'link'),
+                    summary: getSubValue(entry, 'summary') || getSubValue(entry, 'description')
                 };
 
                 nuevasLicitaciones.push(licitacion);
