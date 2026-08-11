@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo con búsqueda tolerante de entradas para la PLACSP.
+ * Script definitivo con búsqueda recursiva de entradas y cabeceras robustas para la PLACSP.
  */
 
 import fetch from 'node-fetch';
@@ -48,14 +48,37 @@ function getLinkHref(entry) {
     return preferred ? (preferred['@_href'] || '') : (links[0]['@_href'] || '');
 }
 
+/**
+ * Busca de forma recursiva cualquier propiedad 'entry' o 'item' dentro del objeto JSON parseado.
+ */
+function findEntriesRecursive(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    
+    if (obj.entry) {
+        return Array.isArray(obj.entry) ? obj.entry : [obj.entry];
+    }
+    if (obj.item) {
+        return Array.isArray(obj.item) ? obj.item : [obj.item];
+    }
+
+    for (const key of Object.keys(obj)) {
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+            const found = findEntriesRecursive(obj[key]);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con el feed de la PLACSP...`);
+    console.log(`[${new Date().toISOString()}] Conectando con el feed Atom de la PLACSP...`);
     
     try {
         const response = await fetch(ATOM_URL, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BotLicitaciones/2.0',
-                'Accept': 'application/atom+xml, application/xml, text/xml'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/atom+xml, application/xml, text/xml, */*',
+                'Accept-Language': 'es-ES,es;q=0.9'
             }
         });
 
@@ -65,6 +88,12 @@ async function fetchLicitaciones() {
 
         const xmlData = await response.text();
 
+        // Verificar si por error se recibió HTML
+        if (xmlData.trim().toLowerCase().startsWith('<!doctype html') || xmlData.includes('<html')) {
+            console.error('Error: El servidor devolvió una página HTML en lugar de un feed Atom (posible bloqueo o URL incorrecta).');
+            return [];
+        }
+
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: '@_',
@@ -73,33 +102,11 @@ async function fetchLicitaciones() {
 
         const jsonObj = parser.parse(xmlData);
         
-        // Obtener el nodo raíz de forma segura
-        let feed = jsonObj.feed || jsonObj.rss || jsonObj.channel;
-        if (!feed) {
-            const rootKey = Object.keys(jsonObj).find(k => k && k !== '?xml');
-            feed = rootKey ? jsonObj[rootKey] : null;
-        }
+        // Búsqueda recursiva tolerante de entradas Atom
+        const rawEntries = findEntriesRecursive(jsonObj);
 
-        if (!feed) {
-            console.log('Aviso: No se pudo determinar el nodo raíz del feed.');
-            return [];
-        }
-
-        // Búsqueda tolerante de entradas (soporta <entry>, <item> o contenedores anidados)
-        let rawEntries = feed.entry || feed.item;
-        if (!rawEntries) {
-            const possibleKey = Object.keys(feed).find(k => {
-                const val = feed[k];
-                return Array.isArray(val) || (val && typeof val === 'object' && (val.entry || val.item));
-            });
-            if (possibleKey) {
-                const container = feed[possibleKey];
-                rawEntries = Array.isArray(container) ? container : (container.entry || container.item);
-            }
-        }
-
-        if (!rawEntries) {
-            console.log('Aviso: No se encontraron entradas de licitación. Estructura de claves raíz detectada:', Object.keys(feed));
+        if (!rawEntries || rawEntries.length === 0) {
+            console.log('Aviso: No se encontraron entradas de licitación en el documento.');
             return [];
         }
 
