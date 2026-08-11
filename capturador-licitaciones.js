@@ -1,38 +1,25 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo para la captura de licitaciones utilizando el feed público oficial de la PLACSP.
+ * Script definitivo para la captura, paginación y sincronización idempotente 
+ * con Supabase utilizando el feed Atom oficial de OpenPLACSP.
  */
 
 import fetch from 'node-fetch';
 import { XMLParser } from 'fast-xml-parser';
-import fs from 'fs';
-import path from 'path';
+import { createClient } from '@supabase/supabase-js';
 
-const STATE_FILE = path.resolve('./processed_ids.json');
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-// URL del canal de sindicación público general de la PLACSP
-const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion';
-
-function loadProcessedIds() {
-    try {
-        if (fs.existsSync(STATE_FILE)) {
-            const data = fs.readFileSync(STATE_FILE, 'utf-8');
-            return new Set(JSON.parse(data));
-        }
-    } catch (error) {
-        console.error('Error al cargar el archivo de estado de IDs:', error.message);
-    }
-    return new Set();
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error('Error crítico: Faltan las variables de entorno de Supabase (SUPABASE_URL y SUPABASE_KEY).');
+    process.exit(1);
 }
 
-function saveProcessedIds(processedSet) {
-    try {
-        const arrayData = Array.from(processedSet);
-        fs.writeFileSync(STATE_FILE, JSON.stringify(arrayData, null, 2), 'utf-8');
-    } catch (error) {
-        console.error('Error al guardar el archivo de estado de IDs:', error.message);
-    }
-}
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// URL oficial del Atom de datos abiertos de la PLACSP
+const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
 function getSubValue(obj, fieldName) {
     if (!obj || typeof obj !== 'object') return '';
@@ -83,13 +70,13 @@ function getNextPageUrl(jsonObj) {
     }
 }
 
-async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con el canal Atom público de la PLACSP...`);
+async function sincronizarLicitaciones() {
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización con OpenPLACSP Atom...`);
     
-    let currentUrl = ATOM_URL;
+    let currentUrl = INITIAL_ATOM_URL;
     let allEntries = [];
     let pagesProcessed = 0;
-    const maxPages = 5;
+    const maxPages = 30; // Límite de seguridad robusto para la paginación
 
     const parser = new XMLParser({
         ignoreAttributes: false,
@@ -108,13 +95,13 @@ async function fetchLicitaciones() {
             const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
 
             if (!response.ok) {
-                console.error(`Error HTTP ${response.status} en la URL: ${currentUrl}`);
+                console.error(`Error HTTP ${response.status} al consultar la página.`);
                 break;
             }
 
             const rawText = await response.text();
             if (rawText.trim().toLowerCase().startsWith('<!doctype html>') || rawText.includes('<html')) {
-                console.error('El servidor ha respondido con una página HTML en lugar del feed XML.');
+                console.error('El servidor ha devuelto HTML en lugar del feed XML.');
                 break;
             }
 
@@ -133,43 +120,89 @@ async function fetchLicitaciones() {
                 break;
             }
         } catch (error) {
-            console.error('Error durante el recorrido del feed:', error.message);
+            console.error('Error durante la paginación del feed:', error.message);
             break;
         }
     }
 
-    console.log(`Total de entradas recopiladas en la ejecución: ${allEntries.length}`);
+    console.log(`Total de entradas obtenidas del feed: ${allEntries.length}`);
 
-    const processedIds = loadProcessedIds();
-    const nuevasLicitaciones = [];
+    let stats = { inserted: 0, updated: 0, skipped: 0 };
 
     for (const entry of allEntries) {
         const entryId = getSubValue(entry, 'id') || getSubValue(entry, 'guid') || getLinkHref(entry);
+        if (!entryId) continue;
 
-        if (entryId && !processedIds.has(entryId)) {
-            const licitacion = {
-                id: entryId,
-                title: getSubValue(entry, 'title'),
-                updated: getSubValue(entry, 'updated') || getSubValue(entry, 'pubDate') || getSubValue(entry, 'published') || new Date().toISOString(),
-                link: getLinkHref(entry, 'alternate') || getSubValue(entry, 'link'),
-                summary: getSubValue(entry, 'summary') || getSubValue(entry, 'description')
-            };
+        const title = getSubValue(entry, 'title');
+        const updated = getSubValue(entry, 'updated') || getSubValue(entry, 'published') || new Date().toISOString();
+        const link = getLinkHref(entry, 'alternate') || getSubValue(entry, 'link');
+        const summary = getSubValue(entry, 'summary') || getSubValue(entry, 'description');
 
-            nuevasLicitaciones.push(licitacion);
-            processedIds.add(entryId);
+        // Consultar el registro existente en Supabase para validar la fecha de actualización
+        const { data: existing, error: selectError } = await supabase
+            .from('licitaciones')
+            .select('id, updated')
+            .eq('id', entryId)
+            .single();
+
+        if (selectError && selectError.code !== 'PGRST116') {
+            console.error(`Error consultando Supabase para ID ${entryId}:`, selectError.message);
+            continue;
+        }
+
+        if (!existing) {
+            // Registro nuevo -> INSERT
+            const { error: insertError } = await supabase
+                .from('licitaciones')
+                .insert([{
+                    id: entryId,
+                    title,
+                    updated,
+                    link,
+                    summary,
+                    created_at: new Date().toISOString()
+                }]);
+
+            if (insertError) {
+                console.error(`Error insertando ID ${entryId}:`, insertError.message);
+            } else {
+                stats.inserted++;
+            }
+        } else {
+            // Registro existente -> Validar si la versión es más reciente
+            const existingUpdated = new Date(existing.updated).getTime();
+            const incomingUpdated = new Date(updated).getTime();
+
+            if (incomingUpdated > existingUpdated) {
+                // Actualización detectada -> UPDATE
+                const { error: updateError } = await supabase
+                    .from('licitaciones')
+                    .update({
+                        title,
+                        updated,
+                        link,
+                        summary
+                    })
+                    .eq('id', entryId);
+
+                if (updateError) {
+                    console.error(`Error actualizando ID ${entryId}:`, updateError.message);
+                } else {
+                    stats.updated++;
+                }
+            } else {
+                // Sin modificaciones -> Idempotente / SKIP
+                stats.skipped++;
+            }
         }
     }
 
-     saveProcessedIds(processedIds);
-
-    console.log(`Licitaciones nuevas reales detectadas: ${nuevasLicitaciones.length}`);
-    return nuevasLicitaciones;
+    console.log('Sincronización finalizada correctamente.');
+    console.log(`Resumen: ${stats.inserted} insertadas, ${stats.updated} actualizadas, ${stats.skipped} sin cambios.`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    fetchLicitaciones().then(nuevas => {
-        console.log('Resultado de la ejecución:', JSON.stringify(nuevas, null, 2));
-    });
+    sincronizarLicitaciones();
 }
 
-export { fetchLicitaciones };
+export { sincronizarLicitaciones };
