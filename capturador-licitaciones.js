@@ -1,18 +1,16 @@
 /**
  * capturador-licitaciones.js
  * Script definitivo para la captura de licitaciones de la PLACSP 
- * siguiendo el estándar Atom (RFC 4287) y Paged Feeds (RFC 5005).
+ * con gestión correcta de cookies de sesión y sindicación Atom.
  */
 
-import fetch from 'node-fetch';
 import { XMLParser } from 'fast-xml-parser';
 import fs from 'fs';
 import path from 'path';
 
 const STATE_FILE = path.resolve('./processed_ids.json');
-
-// URL inicial del canal de sindicación de la PLACSP
-const INITIAL_ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
+const PORTAL_URL = 'https://contrataciondelestado.es/wps/portal/sindicacion';
+const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
 
 function loadProcessedIds() {
     try {
@@ -68,9 +66,6 @@ function findEntriesRecursive(obj) {
     return null;
 }
 
-/**
- * Obtiene el enlace a la siguiente página del feed (RFC 5005 - Paged Feeds).
- */
 function getNextPageUrl(jsonObj) {
     try {
         let feed = jsonObj.feed;
@@ -88,12 +83,45 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con los canales Atom de la PLACSP (RFC 4287 / RFC 5005)...`);
+    console.log(`[${new Date().toISOString()}] Iniciando conexión segura con la PLACSP...`);
     
-    let currentUrl = INITIAL_ATOM_URL;
+    const browserHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'es-ES,es;q=0.9',
+        'Connection': 'keep-alive'
+    };
+
+    let cookies = '';
+
+    try {
+        // 1. Petición inicial al portal para obtener la sesión y superar la validación perimetral
+        const portalResponse = await fetch(PORTAL_URL, {
+            method: 'GET',
+            headers: {
+                ...browserHeaders,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            },
+            redirect: 'follow'
+        });
+
+        // Extracción correcta de cookies mediante getSetCookie()
+        if (typeof portalResponse.headers.getSetCookie === 'function') {
+            const setCookies = portalResponse.headers.getSetCookie();
+            cookies = setCookies.map(c => c.split(';')[0]).join('; ');
+        } else {
+            const rawCookie = portalResponse.headers.get('set-cookie');
+            if (rawCookie) {
+                cookies = rawCookie.split(';')[0];
+            }
+        }
+    } catch (e) {
+        console.log('Aviso en la fase de pre-conexión al portal, continuando con petición directa...');
+    }
+
+    let currentUrl = ATOM_URL;
     let allEntries = [];
     let pagesProcessed = 0;
-    const maxPages = 5; // Límite de seguridad para paginación diaria
+    const maxPages = 5;
 
     const parser = new XMLParser({
         ignoreAttributes: false,
@@ -101,15 +129,20 @@ async function fetchLicitaciones() {
         removeNamespace: true
     });
 
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/atom+xml, application/xml, text/xml, */*'
+    const feedHeaders = {
+        ...browserHeaders,
+        'Accept': 'application/atom+xml, application/xml, text/xml, */*',
+        ...(cookies ? { 'Cookie': cookies } : {})
     };
 
     while (currentUrl && pagesProcessed < maxPages) {
         try {
             console.log(`Consultando página [${pagesProcessed + 1}]: ${currentUrl}`);
-            const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
+            const response = await fetch(currentUrl, {
+                method: 'GET',
+                headers: feedHeaders,
+                redirect: 'follow'
+            });
 
             if (!response.ok) {
                 console.error(`Error HTTP ${response.status} en la URL: ${currentUrl}`);
@@ -129,7 +162,6 @@ async function fetchLicitaciones() {
                 allEntries = allEntries.concat(entries);
             }
 
-            // Buscar si existe página siguiente según la especificación de Paged Feeds
             const nextUrl = getNextPageUrl(jsonObj);
             if (nextUrl && nextUrl !== currentUrl) {
                 currentUrl = nextUrl;
@@ -138,7 +170,7 @@ async function fetchLicitaciones() {
                 break;
             }
         } catch (error) {
-            console.error('Error durante el recorrido de paginación:', error.message);
+            console.error('Error durante la consulta de canales Atom:', error.message);
             break;
         }
     }
