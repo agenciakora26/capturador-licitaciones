@@ -79,6 +79,25 @@ function mapTipoContrato(code) {
     return mapa[c] || (c ? `Servicios / Otro (${c})` : 'Servicios');
 }
 
+async function obtenerExpedientesExistentes() {
+    const expedientesSet = new Set();
+    let rangeStart = 0;
+    const rangeStep = 1000;
+    
+    while (true) {
+        const { data, error } = await supabase
+            .from('licitaciones')
+            .select('num_expediente')
+            .range(rangeStart, rangeStart + rangeStep - 1);
+            
+        if (error || !data || data.length === 0) break;
+        data.forEach(row => expedientesSet.add(row.num_expediente));
+        if (data.length < rangeStep) break;
+        rangeStart += rangeStep;
+    }
+    return expedientesSet;
+}
+
 async function ejecutarCaptura() {
     console.log("Iniciando descarga y análisis profundo del feed ATOM oficial...");
 
@@ -109,26 +128,12 @@ async function ejecutarCaptura() {
         const entries = jsonObj.feed?.entry || [];
         const listaEntradas = Array.isArray(entries) ? entries : [entries];
 
+        console.log("Consultando registros existentes en Supabase...");
+        const expedientesExistentes = await obtenerExpedientesExistentes();
+
         const licitacionesParaGuardar = [];
-        
-        // Definimos el filtro de fecha: por ejemplo, solo elementos de las últimas 24-48 horas o del día actual
-        // Para asegurar que no perdemos nada si hay un desfase de horas, filtramos elementos actualizados recientemente
-        const ahora = new Date();
-        const limiteAntiguedadMs = 36 * 60 * 60 * 1000; // Margen de 36 horas para capturar las de hoy y últimas de ayer
 
         for (const entry of listaEntradas) {
-            // Extraer fecha de actualización/publicación del feed ATOM
-            const rawFechaPub = extractText(entry.updated || entry.published);
-            if (rawFechaPub) {
-                const fechaPub = new Date(rawFechaPub);
-                if (!isNaN(fechaPub.getTime())) {
-                    // Descartar si es más antiguo que el margen establecido
-                    if ((ahora.getTime() - fechaPub.getTime()) > limiteAntiguedadMs) {
-                        continue; 
-                    }
-                }
-            }
-
             const status = entry['cac-place-ext:ContractFolderStatus'] || {};
             const project = status['cac:ProcurementProject'] || {};
 
@@ -138,6 +143,11 @@ async function ejecutarCaptura() {
                 findDeep(entry, 'cbc:ContractFolderID') ||
                 entry.id
             );
+
+            // Si ya lo tenemos registrado en Supabase, nos lo saltamos directamente
+            if (!numExpediente || expedientesExistentes.has(numExpediente)) {
+                continue;
+            }
 
             const objeto = extractText(
                 project['cbc:Name'] || 
@@ -207,23 +217,22 @@ async function ejecutarCaptura() {
                 }
             }
 
-            if (numExpediente) {
-                licitacionesParaGuardar.push({
-                    num_expediente: numExpediente,
-                    objeto_contrato: objeto,
-                    presupuesto_base: presupuesto,
-                    tipo_contrato: tipoContrato,
-                    codigo_cpv: codigoCpv,
-                    fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,provincia: ubicacionFinal,
-                    estado_oficial: estado,
-                    url_licitacion: urlLicitacion,
-                    origen: 'PLACSP'
-                });
-            }
+            licitacionesParaGuardar.push({
+                num_expediente: numExpediente,
+                objeto_contrato: objeto,
+                presupuesto_base: presupuesto,
+                tipo_contrato: tipoContrato,
+                codigo_cpv: codigoCpv,
+                fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
+                provincia: ubicacionFinal,
+                estado_oficial: estado,
+                url_licitacion: urlLicitacion,
+                origen: 'PLACSP'
+            });
         }
 
         if (licitacionesParaGuardar.length === 0) {
-            console.log("No se han encontrado nuevas licitaciones en el periodo analizado.");
+            console.log("ℹ️ No hay licitaciones nuevas. Todo está al día.");
             return;
         }
 
@@ -233,7 +242,7 @@ async function ejecutarCaptura() {
             await supabase.from('licitaciones').upsert(lote, { onConflict: 'num_expediente' });
         }
 
-        console.log(`¡Sincronización completada! ${licitacionesParaGuardar.length} nuevas licitaciones procesadas.`);
+        console.log(`¡Sincronización completada! ${licitacionesParaGuardar.length} nuevas licitaciones añadidas.`);
 
     } catch (err) {
         console.error("Error crítico durante la ejecución del script:", err);
