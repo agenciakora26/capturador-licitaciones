@@ -14,7 +14,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     realtime: { transport: ws }
 });
 
-const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom";
+const ATOM_URL = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_1ros/sindicacion_643.atom";
 
 function extractText(node) {
     if (node === null || node === undefined) return null;
