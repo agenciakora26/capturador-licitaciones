@@ -1,6 +1,7 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo con búsqueda recursiva de entradas y cabeceras robustas para la PLACSP.
+ * Script completo y definitivo para la captura de licitaciones de la PLACSP
+ * conforme a las especificaciones técnicas de sindicación Atom.
  */
 
 import fetch from 'node-fetch';
@@ -9,6 +10,8 @@ import fs from 'fs';
 import path from 'path';
 
 const STATE_FILE = path.resolve('./processed_ids.json');
+
+// Endpoint oficial de sindicación Atom de la PLACSP
 const ATOM_URL = 'https://contrataciondelestado.es/sindicacion/sindicacion64?tipoLicitacion=1';
 
 function loadProcessedIds() {
@@ -48,9 +51,6 @@ function getLinkHref(entry) {
     return preferred ? (preferred['@_href'] || '') : (links[0]['@_href'] || '');
 }
 
-/**
- * Busca de forma recursiva cualquier propiedad 'entry' o 'item' dentro del objeto JSON parseado.
- */
 function findEntriesRecursive(obj) {
     if (!obj || typeof obj !== 'object') return null;
     
@@ -71,14 +71,14 @@ function findEntriesRecursive(obj) {
 }
 
 async function fetchLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Conectando con el feed Atom de la PLACSP...`);
+    console.log(`[${new Date().toISOString()}] Conectando con el canal Atom de la PLACSP...`);
     
     try {
         const response = await fetch(ATOM_URL, {
+            redirect: 'follow',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'application/atom+xml, application/xml, text/xml, */*',
-                'Accept-Language': 'es-ES,es;q=0.9'
+                'Accept': 'application/atom+xml, application/xml, text/xml, */*'
             }
         });
 
@@ -86,12 +86,10 @@ async function fetchLicitaciones() {
             throw new Error(`Error en la respuesta HTTP: ${response.status} - ${response.statusText}`);
         }
 
-        const xmlData = await response.text();
+        const rawText = await response.text();
 
-        // Verificar si por error se recibió HTML
-        if (xmlData.trim().toLowerCase().startsWith('<!doctype html') || xmlData.includes('<html')) {
-            console.error('Error: El servidor devolvió una página HTML en lugar de un feed Atom (posible bloqueo o URL incorrecta).');
-            return [];
+        if (rawText.trim().toLowerCase().startsWith('<!doctype html') || rawText.includes('<html')) {
+            throw new Error('El servidor de la PLACSP ha respondido con una página HTML (posible redirección de seguridad o bloqueo de agente).');
         }
 
         const parser = new XMLParser({
@@ -100,13 +98,11 @@ async function fetchLicitaciones() {
             removeNamespace: true
         });
 
-        const jsonObj = parser.parse(xmlData);
-        
-        // Búsqueda recursiva tolerante de entradas Atom
+        const jsonObj = parser.parse(rawText);
         const rawEntries = findEntriesRecursive(jsonObj);
 
         if (!rawEntries || rawEntries.length === 0) {
-            console.log('Aviso: No se encontraron entradas de licitación en el documento.');
+            console.log('Aviso: No se encontraron entradas en el feed Atom.');
             return [];
         }
 
@@ -135,7 +131,7 @@ async function fetchLicitaciones() {
 
         saveProcessedIds(processedIds);
 
-        console.log(`Licitaciones nuevas reales detectadas: ${nuevasLicitaciones.length}`);
+        console.log(`Licitaciones nuevas detectadas: ${nuevasLicitaciones.length}`);
         return nuevasLicitaciones;
 
     } catch (error) {
@@ -146,7 +142,7 @@ async function fetchLicitaciones() {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     fetchLicitaciones().then(nuevas => {
-        console.log('Detalle del resultado:', JSON.stringify(nuevas, null, 2));
+        console.log('Resultado de la ejecución:', JSON.stringify(nuevas, null, 2));
     });
 }
 
