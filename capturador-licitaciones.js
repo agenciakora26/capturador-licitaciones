@@ -1,7 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo para la captura, paginación y sincronización idempotente 
- * con Supabase utilizando el feed Atom oficial de OpenPLACSP.
+ * Script adaptado al esquema real de Supabase para la sincronización con OpenPLACSP.
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -16,7 +15,6 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
     process.exit(1);
 }
 
-// Configuración de Supabase compatible con Node.js 20 utilizando ws
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false },
     realtime: { transport: ws }
@@ -95,7 +93,6 @@ async function sincronizarLicitaciones() {
     while (currentUrl && pagesProcessed < maxPages) {
         try {
             console.log(`Consultando página [${pagesProcessed + 1}]: ${currentUrl}`);
-            // Usando el fetch nativo global de Node.js 20
             const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
 
             if (!response.ok) {
@@ -131,73 +128,59 @@ async function sincronizarLicitaciones() {
 
     console.log(`Total de entradas obtenidas del feed: ${allEntries.length}`);
 
-    let stats = { inserted: 0, updated: 0, skipped: 0 };
+    let stats = { inserted: 0, skipped: 0 };
 
     for (const entry of allEntries) {
-        const entryId = getSubValue(entry, 'id') || getSubValue(entry, 'guid') || getLinkHref(entry);
-        if (!entryId) continue;
-
-        const title = getSubValue(entry, 'title');
-        const updated = getSubValue(entry, 'updated') || getSubValue(entry, 'published') || new Date().toISOString();
-        const link = getLinkHref(entry, 'alternate') || getSubValue(entry, 'link');
+        const urlLicitacion = getLinkHref(entry, 'alternate') || getSubValue(entry, 'link');
+        const titulo = getSubValue(entry, 'title');
         const summary = getSubValue(entry, 'summary') || getSubValue(entry, 'description');
 
+        if (!urlLicitacion) continue;
+
+        // Comprobar si la licitación ya existe basándonos en su URL única
         const { data: existing, error: selectError } = await supabase
             .from('licitaciones')
-            .select('id, updated')
-            .eq('id', entryId)
+            .select('id, url_licitacion')
+            .eq('url_licitacion', urlLicitacion)
             .single();
 
         if (selectError && selectError.code !== 'PGRST116') {
-            console.error(`Error consultando Supabase para ID ${entryId}:`, selectError.message);
+            console.error(`Error consultando Supabase para URL ${urlLicitacion}:`, selectError.message);
             continue;
         }
 
         if (!existing) {
+            // Extraer o asignar valores básicos compatibles con las columnas de tu tabla
+            const nuevaLicitacion = {
+                num_expediente: getSubValue(entry, 'id') ? getSubValue(entry, 'id').split('/').pop() : 'S/N',
+                objeto_contrato: titulo || summary || 'Sin objeto',
+                presupuesto_base: null,
+                tipo_contrato: null,
+                codigo_cpv: null,
+                estado_oficial: 'Publicada',
+                url_licitacion: urlLicitacion,
+                fecha_fin_oferta: null,
+                provincia: null,
+                origen: 'PLACSP',
+                created_at: new Date().toISOString()
+            };
+
             const { error: insertError } = await supabase
                 .from('licitaciones')
-                .insert([{
-                    id: entryId,
-                    title,
-                    updated,
-                    link,
-                    summary,
-                    created_at: new Date().toISOString()
-                }]);
+                .insert([nuevaLicitacion]);
 
             if (insertError) {
-                console.error(`Error insertando ID ${entryId}:`, insertError.message);
+                console.error(`Error insertando licitación:`, insertError.message);
             } else {
                 stats.inserted++;
             }
         } else {
-            const existingUpdated = new Date(existing.updated).getTime();
-            const incomingUpdated = new Date(updated).getTime();
-
-            if (incomingUpdated > existingUpdated) {
-                const { error: updateError } = await supabase
-                    .from('licitaciones')
-                    .update({
-                        title,
-                        updated,
-                        link,
-                        summary
-                    })
-                    .eq('id', entryId);
-
-                if (updateError) {
-                    console.error(`Error actualizando ID ${entryId}:`, updateError.message);
-                } else {
-                    stats.updated++;
-                }
-            } else {
-                stats.skipped++;
-            }
+            stats.skipped++;
         }
     }
 
     console.log('Sincronización finalizada correctamente.');
-    console.log(`Resumen: ${stats.inserted} insertadas, ${stats.updated} actualizadas, ${stats.skipped} sin cambios.`);
+    console.log(`Resumen: ${stats.inserted} insertadas, ${stats.skipped} ya existentes (omitidas).`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
