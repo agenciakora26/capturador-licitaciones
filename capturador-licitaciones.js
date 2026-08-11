@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script adaptado para tolerar prefijos de namespaces en XML y evitar duplicidades.
+ * Script definitivo con limpieza automática de namespaces para PLACSP.
  */
 
 import fetch from 'node-fetch';
@@ -32,17 +32,9 @@ function saveProcessedIds(processedSet) {
     }
 }
 
-/**
- * Busca recursivamente o por sufijo una etiqueta ignorando prefijos de namespaces (ej. atom:feed -> feed)
- */
-function findNodeBySuffix(obj, suffix) {
-    if (!obj || typeof obj !== 'object') return null;
-    const key = Object.keys(obj).find(k => k === suffix || k.endsWith(':' + suffix));
-    return key ? obj[key] : null;
-}
-
 function getSubValue(obj, fieldName) {
-    const val = findNodeBySuffix(obj, fieldName);
+    if (!obj || typeof obj !== 'object') return '';
+    const val = obj[fieldName];
     if (!val) return '';
     if (typeof val === 'string' || typeof val === 'number') return String(val);
     if (val['#text']) return String(val['#text']);
@@ -50,16 +42,10 @@ function getSubValue(obj, fieldName) {
 }
 
 function getLinkHref(entry) {
-    const linkNode = findNodeBySuffix(entry, 'link');
-    if (!linkNode) return '';
-    if (Array.isArray(linkNode)) {
-        const preferred = linkNode.find(l => l['@_rel'] === 'alternate' || !l['@_rel']);
-        return preferred ? (preferred['@_href'] || '') : (linkNode[0]['@_href'] || '');
-    }
-    if (typeof linkNode === 'object') {
-        return linkNode['@_href'] || '';
-    }
-    return '';
+    if (!entry || !entry.link) return '';
+    const links = Array.isArray(entry.link) ? entry.link : [entry.link];
+    const preferred = links.find(l => l['@_rel'] === 'alternate' || !l['@_rel']);
+    return preferred ? (preferred['@_href'] || '') : (links[0]['@_href'] || '');
 }
 
 async function fetchLicitaciones() {
@@ -79,22 +65,28 @@ async function fetchLicitaciones() {
 
         const xmlData = await response.text();
 
+        // removeNamespace: true elimina cualquier prefijo XML (ej. atom:, ns2:) automáticamente
         const parser = new XMLParser({
             ignoreAttributes: false,
-            attributeNamePrefix: '@_'
+            attributeNamePrefix: '@_',
+            removeNamespace: true
         });
 
         const jsonObj = parser.parse(xmlData);
         
-        // Localizar el feed independientemente del prefijo XML
-        const feed = findNodeBySuffix(jsonObj, 'feed');
+        // Obtener el nodo raíz (feed) de forma segura
+        let feed = jsonObj.feed;
         if (!feed) {
-            console.log('Aviso: No se encontró el nodo raíz del feed en la respuesta.');
+            const rootKey = Object.keys(jsonObj).find(k => k !== '?xml');
+            feed = rootKey ? jsonObj[rootKey] : null;
+        }
+
+        if (!feed) {
+            console.log('Aviso: No se pudo determinar el nodo raíz del feed.');
             return [];
         }
 
-        // Localizar las entradas independientemente del prefijo XML
-        const rawEntries = findNodeBySuffix(feed, 'entry');
+        const rawEntries = feed.entry;
         if (!rawEntries) {
             console.log('Aviso: No se encontraron entradas de licitación en el feed.');
             return [];
