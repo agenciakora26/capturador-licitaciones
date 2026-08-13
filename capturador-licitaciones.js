@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script adaptado al esquema real de Supabase para la sincronización con OpenPLACSP.
+ * Script mejorado para la extracción completa de licitaciones y estados desde OpenPLACSP Atom.
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -22,13 +22,27 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
-function getSubValue(obj, fieldName) {
-    if (!obj || typeof obj !== 'object') return '';
-    const val = obj[fieldName];
-    if (!val) return '';
-    if (typeof val === 'string' || typeof val === 'number') return String(val);
-    if (val['#text']) return String(val['#text']);
-    return '';
+// Función auxiliar para buscar valores de forma recursiva sin importar mayúsculas/minúsculas o anidación
+function findValueDeep(obj, targetKeys) {
+    if (!obj || typeof obj !== 'object') return null;
+    
+    const keys = Array.isArray(targetKeys) ? targetKeys : [targetKeys];
+    
+    for (const key of Object.keys(obj)) {
+        const lowerKey = key.toLowerCase();
+        if (keys.some(tk => lowerKey === tk.toLowerCase())) {
+            const val = obj[key];
+            if (val !== null && val !== undefined) {
+                if (typeof val === 'string' || typeof val === 'number') return String(val).trim();
+                if (val['#text']) return String(val['#text']).trim();
+            }
+        }
+        if (typeof obj[key] === 'object') {
+            const found = findValueDeep(obj[key], targetKeys);
+            if (found !== null && found !== undefined && found !== '') return found;
+        }
+    }
+    return null;
 }
 
 function getLinkHref(entry, relType = 'alternate') {
@@ -71,13 +85,34 @@ function getNextPageUrl(jsonObj) {
     }
 }
 
+// Mapeador de códigos o estados oficiales de PLACSP a los valores de tu desplegable
+function mapearEstadoOficial(codigoRaw) {
+    if (!codigoRaw) return 'Publicada';
+    const val = String(codigoRaw).toUpperCase().trim();
+
+    if (val.includes('PUB') || val.includes('PUBLICADA')) return 'Publicada';
+    if (val.includes('EV_PREV') || val.includes('EVALUACION_PREVIA')) return 'Evaluación Previa';
+    if (val.includes('EV') || val.includes('EVALUACION')) return 'Evaluación';
+    if (val.includes('PLAZO') || val.includes('EN_PLAZO')) return 'Licitaciones en plazo';
+    if (val.includes('ADJ_PROV') || val.includes('PROVISIONAL')) return 'Adjudicación Provisional';
+    if (val.includes('PARCIALMENTE_ADJ')) return 'Parcialmente Adjudicada';
+    if (val.includes('ADJ')) return 'Adjudicada';
+    if (val.includes('RES_PARCIAL')) return 'Parcialmente Resuelta';
+    if (val.includes('RES') || val.includes('RESUELTA')) return 'Resuelta';
+    if (val.includes('DES')) return 'Desistida';
+    if (val.includes('ANU')) return 'Anulada';
+    if (val.includes('PREV') || val.includes('ANUNCIO_PREVIO')) return 'Anuncio Previo';
+
+    return 'Publicada';
+}
+
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización con OpenPLACSP Atom...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización avanzada con OpenPLACSP Atom...`);
     
     let currentUrl = INITIAL_ATOM_URL;
     let allEntries = [];
     let pagesProcessed = 0;
-    const maxPages = 30;
+    const maxPages = 5; // Ajustable según necesidad
 
     const parser = new XMLParser({
         ignoreAttributes: false,
@@ -131,9 +166,8 @@ async function sincronizarLicitaciones() {
     let stats = { inserted: 0, skipped: 0 };
 
     for (const entry of allEntries) {
-        const urlLicitacion = getLinkHref(entry, 'alternate') || getSubValue(entry, 'link');
-        const titulo = getSubValue(entry, 'title');
-        const summary = getSubValue(entry, 'summary') || getSubValue(entry, 'description');
+        const urlLicitacion = getLinkHref(entry, 'alternate') || findValueDeep(entry, ['link', 'id']);
+        const titulo = findValueDeep(entry, ['title', 'summary', 'description']);
 
         if (!urlLicitacion) continue;
 
@@ -150,17 +184,32 @@ async function sincronizarLicitaciones() {
         }
 
         if (!existing) {
-            // Extraer o asignar valores básicos compatibles con las columnas de tu tabla
+            // Extracción profunda de campos específicos de PLACSP
+            const numExpediente = findValueDeep(entry, ['contractFolderID', 'id', ' expediente']) || 'S/N';
+            const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto']);
+            const presupuestoBase = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
+            
+            const tipoContrato = findValueDeep(entry, ['contractTypeCode', 'type', 'tipoContrato']) || null;
+            const codigoCpv = findValueDeep(entry, ['itemClassificationCode', 'cpv', 'codigoCPV']) || null;
+            
+            const estadoRaw = findValueDeep(entry, ['contractFolderStatusCode', 'status', 'state', 'estadoLicitacion']);
+            const estadoOficial = mapearEstadoOficial(estadoRaw);
+
+            const fechaFinRaw = findValueDeep(entry, ['endDate', 'submissionDeadlineDate', 'fechaFinOferta', 'deadline']);
+            const fechaFinOferta = fechaFinRaw ? new Date(fechaFinRaw).toISOString() : null;
+
+            const provincia = findValueDeep(entry, ['province', 'citySubdivisionName', 'territory', 'provincia']) || null;
+
             const nuevaLicitacion = {
-                num_expediente: getSubValue(entry, 'id') ? getSubValue(entry, 'id').split('/').pop() : 'S/N',
-                objeto_contrato: titulo || summary || 'Sin objeto',
-                presupuesto_base: null,
-                tipo_contrato: null,
-                codigo_cpv: null,
-                estado_oficial: 'Publicada',
+                num_expediente: numExpediente.length > 100 ? numExpediente.substring(0, 100) : numExpediente,
+                objeto_contrato: titulo || 'Sin objeto',
+                presupuesto_base: !isNaN(presupuestoBase) ? presupuestoBase : null,
+                tipo_contrato: tipoContrato,
+                codigo_cpv: codigoCpv,
+                estado_oficial: estadoOficial,
                 url_licitacion: urlLicitacion,
-                fecha_fin_oferta: null,
-                provincia: null,
+                fecha_fin_oferta: fechaFinOferta,
+                provincia: provincia,
                 origen: 'PLACSP',
                 created_at: new Date().toISOString()
             };
@@ -170,7 +219,7 @@ async function sincronizarLicitaciones() {
                 .insert([nuevaLicitacion]);
 
             if (insertError) {
-                console.error(`Error insertando licitación:`, insertError.message);
+                console.error(`Error insertando licitación (${nuevaLicitacion.num_expediente}):`, insertError.message);
             } else {
                 stats.inserted++;
             }
@@ -179,7 +228,7 @@ async function sincronizarLicitaciones() {
         }
     }
 
-    console.log('Sincronización finalizada correctamente.');
+    console.log('Sincronización de licitaciones finalizada correctamente.');
     console.log(`Resumen: ${stats.inserted} insertadas, ${stats.skipped} ya existentes (omitidas).`);
 }
 
