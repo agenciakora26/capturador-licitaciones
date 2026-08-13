@@ -1,6 +1,7 @@
 /**
  * capturador-licitaciones.js
- * Script actualizado con lógica de Upsert (Insertar si no existe, Actualizar si ya existe).
+ * Script definitivo: Procesamiento completo del feed Atom, inserción de nuevas,
+ * y actualización automática de estados y campos para las existentes.
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -11,7 +12,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.error('Error crítico: Faltan las variables de entorno de Supabase (SUPABASE_URL y SUPABASE_KEY).');
+    console.error('Error crítico: Faltan las variables de entorno de Supabase.');
     process.exit(1);
 }
 
@@ -22,7 +23,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
-// Función auxiliar para buscar valores de forma recursiva
+// Función auxiliar para búsqueda profunda de nodos XML
 function findValueDeep(obj, targetKeys) {
     if (!obj || typeof obj !== 'object') return null;
     const keys = Array.isArray(targetKeys) ? targetKeys : [targetKeys];
@@ -77,6 +78,7 @@ function getNextPageUrl(jsonObj) {
     } catch (e) { return null; }
 }
 
+// Mapeador robusto de estados oficiales de la PLACSP
 function mapearEstadoOficial(codigoRaw) {
     if (!codigoRaw) return 'Publicada';
     const val = String(codigoRaw).toUpperCase().trim();
@@ -96,38 +98,60 @@ function mapearEstadoOficial(codigoRaw) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización (Modo Upsert)...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización completa del feed Atom (Sin límite de páginas)...`);
     
     let currentUrl = INITIAL_ATOM_URL;
     let allEntries = [];
     let pagesProcessed = 0;
-    const maxPages = 5; 
 
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
-    const headers = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/atom+xml, application/xml, text/xml, */*' };
+    const headers = { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 
+        'Accept': 'application/atom+xml, application/xml, text/xml, */*' 
+    };
 
-    while (currentUrl && pagesProcessed < maxPages) {
+    // Bucle para recorrer TODAS las páginas del feed Atom sin restricciones de maxPages
+    while (currentUrl) {
         try {
-            console.log(`Consultando página [${pagesProcessed + 1}]: ${currentUrl}`);
+            pagesProcessed++;
+            console.log(`Consultando página [${pagesProcessed}]: ${currentUrl}`);
             const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
-            if (!response.ok) break;
+            if (!response.ok) {
+                console.error(`Error HTTP ${response.status} en la página ${pagesProcessed}`);
+                break;
+            }
             const rawText = await response.text();
+            if (rawText.trim().toLowerCase().startsWith('<!doctype html>') || rawText.includes('<html')) {
+                console.error('El servidor ha devuelto HTML en lugar de XML.');
+                break;
+            }
+
             const jsonObj = parser.parse(rawText);
             const entries = findEntriesRecursive(jsonObj);
-            if (entries && entries.length > 0) allEntries = allEntries.concat(entries);
+            if (entries && entries.length > 0) {
+                allEntries = allEntries.concat(entries);
+            }
+
             const nextUrl = getNextPageUrl(jsonObj);
-            if (nextUrl && nextUrl !== currentUrl) { currentUrl = nextUrl; pagesProcessed++; } else break;
-        } catch (error) { break; }
+            if (nextUrl && nextUrl !== currentUrl) {
+                currentUrl = nextUrl;
+            } else {
+                break;
+            }
+        } catch (error) {
+            console.error('Error durante la paginación:', error.message);
+            break;
+        }
     }
 
-    console.log(`Total de entradas obtenidas: ${allEntries.length}`);
+    console.log(`Total de entradas obtenidas del feed completo: ${allEntries.length}`);
     let stats = { inserted: 0, updated: 0 };
 
     for (const entry of allEntries) {
         const urlLicitacion = getLinkHref(entry, 'alternate') || findValueDeep(entry, ['link', 'id']);
         if (!urlLicitacion) continue;
 
-        // Extraer datos (Preparamos el objeto antes de consultar)
+        // Extracción de datos detallados
         const titulo = findValueDeep(entry, ['title', 'summary', 'description']);
         const numExpediente = findValueDeep(entry, ['contractFolderID', 'id', 'expediente']) || 'S/N';
         const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto']);
@@ -153,22 +177,26 @@ async function sincronizarLicitaciones() {
             origen: 'PLACSP'
         };
 
-        // Comprobar existencia
+        // Comprobar si ya existe en Supabase por su URL única
         const { data: existing, error: selectError } = await supabase
             .from('licitaciones')
             .select('id')
             .eq('url_licitacion', urlLicitacion)
             .single();
 
+        if (selectError && selectError.code !== 'PGRST116') {
+            continue;
+        }
+
         if (existing) {
-            // ACTUALIZAR REGISTRO EXISTENTE
+            // Actualizar estado, presupuesto y datos si ya existe (mantiene al día los cambios diarios)
             const { error: updateError } = await supabase
                 .from('licitaciones')
                 .update(datosLicitacion)
                 .eq('id', existing.id);
             if (!updateError) stats.updated++;
         } else {
-            // INSERTAR NUEVO
+            // Insertar nueva licitación del día
             const { error: insertError } = await supabase
                 .from('licitaciones')
                 .insert([{ ...datosLicitacion, created_at: new Date().toISOString() }]);
@@ -176,7 +204,8 @@ async function sincronizarLicitaciones() {
         }
     }
 
-    console.log(`Sincronización finalizada. Insertadas: ${stats.inserted}, Actualizadas: ${stats.updated}.`);
+    console.log('Sincronización diaria finalizada.');
+    console.log(`Resumen -> Nuevas insertadas: ${stats.inserted} | Existentes actualizadas: ${stats.updated}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
