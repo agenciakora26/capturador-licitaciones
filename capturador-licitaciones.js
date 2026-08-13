@@ -1,7 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo: Procesamiento completo del feed Atom, inserción de nuevas,
- * y actualización automática de estados y campos para las existentes.
+ * Script definitivo optimizado: Procesamiento por páginas para evitar errores de memoria (OOM).
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -98,11 +97,11 @@ function mapearEstadoOficial(codigoRaw) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización completa del feed Atom (Sin límite de páginas)...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización por lotes página a página...`);
     
     let currentUrl = INITIAL_ATOM_URL;
-    let allEntries = [];
     let pagesProcessed = 0;
+    let stats = { inserted: 0, updated: 0 };
 
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
     const headers = { 
@@ -110,16 +109,18 @@ async function sincronizarLicitaciones() {
         'Accept': 'application/atom+xml, application/xml, text/xml, */*' 
     };
 
-    // Bucle para recorrer TODAS las páginas del feed Atom sin restricciones de maxPages
+    // Bucle principal: Descarga y procesa página por página sin acumular en memoria global
     while (currentUrl) {
         try {
             pagesProcessed++;
-            console.log(`Consultando página [${pagesProcessed}]: ${currentUrl}`);
+            console.log(`Consultando y procesando página [${pagesProcessed}]: ${currentUrl}`);
+            
             const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
             if (!response.ok) {
                 console.error(`Error HTTP ${response.status} en la página ${pagesProcessed}`);
                 break;
             }
+            
             const rawText = await response.text();
             if (rawText.trim().toLowerCase().startsWith('<!doctype html>') || rawText.includes('<html')) {
                 console.error('El servidor ha devuelto HTML en lugar de XML.');
@@ -128,10 +129,67 @@ async function sincronizarLicitaciones() {
 
             const jsonObj = parser.parse(rawText);
             const entries = findEntriesRecursive(jsonObj);
+
             if (entries && entries.length > 0) {
-                allEntries = allEntries.concat(entries);
+                for (const entry of entries) {
+                    const urlLicitacion = getLinkHref(entry, 'alternate') || findValueDeep(entry, ['link', 'id']);
+                    if (!urlLicitacion) continue;
+
+                    // Extracción de datos detallados
+                    const titulo = findValueDeep(entry, ['title', 'summary', 'description']);
+                    const numExpediente = findValueDeep(entry, ['contractFolderID', 'id', 'expediente']) || 'S/N';
+                    const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto']);
+                    const presupuestoBase = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
+                    const tipoContrato = findValueDeep(entry, ['contractTypeCode', 'type', 'tipoContrato']) || null;
+                    const codigoCpv = findValueDeep(entry, ['itemClassificationCode', 'cpv', 'codigoCPV']) || null;
+                    const estadoRaw = findValueDeep(entry, ['contractFolderStatusCode', 'status', 'state', 'estadoLicitacion']);
+                    const estadoOficial = mapearEstadoOficial(estadoRaw);
+                    const fechaFinRaw = findValueDeep(entry, ['endDate', 'submissionDeadlineDate', 'fechaFinOferta', 'deadline']);
+                    const fechaFinOferta = fechaFinRaw ? new Date(fechaFinRaw).toISOString() : null;
+                    const provincia = findValueDeep(entry, ['province', 'citySubdivisionName', 'territory', 'provincia']) || null;
+
+                    const datosLicitacion = {
+                        num_expediente: numExpediente.length > 100 ? numExpediente.substring(0, 100) : numExpediente,
+                        objeto_contrato: titulo || 'Sin objeto',
+                        presupuesto_base: !isNaN(presupuestoBase) ? presupuestoBase : null,
+                        tipo_contrato: tipoContrato,
+                        codigo_cpv: codigoCpv,
+                        estado_oficial: estadoOficial,
+                        url_licitacion: urlLicitacion,
+                        fecha_fin_oferta: fechaFinOferta,
+                        provincia: provincia,
+                        origen: 'PLACSP'
+                    };
+
+                    // Comprobar si ya existe en Supabase por su URL única
+                    const { data: existing, error: selectError } = await supabase
+                        .from('licitaciones')
+                        .select('id')
+                        .eq('url_licitacion', urlLicitacion)
+                        .single();
+
+                    if (selectError && selectError.code !== 'PGRST116') {
+                        continue;
+                    }
+
+                    if (existing) {
+                        // Actualizar si ya existe
+                        const { error: updateError } = await supabase
+                            .from('licitaciones')
+                            .update(datosLicitacion)
+                            .eq('id', existing.id);
+                        if (!updateError) stats.updated++;
+                    } else {
+                        // Insertar si es nueva
+                        const { error: insertError } = await supabase
+                            .from('licitaciones')
+                            .insert([{ ...datosLicitacion, created_at: new Date().toISOString() }]);
+                        if (!insertError) stats.inserted++;
+                    }
+                }
             }
 
+            // Obtener la URL de la siguiente página antes de descartar el objeto actual
             const nextUrl = getNextPageUrl(jsonObj);
             if (nextUrl && nextUrl !== currentUrl) {
                 currentUrl = nextUrl;
@@ -139,73 +197,13 @@ async function sincronizarLicitaciones() {
                 break;
             }
         } catch (error) {
-            console.error('Error durante la paginación:', error.message);
+            console.error(`Error procesando la página ${pagesProcessed}:`, error.message);
             break;
         }
     }
 
-    console.log(`Total de entradas obtenidas del feed completo: ${allEntries.length}`);
-    let stats = { inserted: 0, updated: 0 };
-
-    for (const entry of allEntries) {
-        const urlLicitacion = getLinkHref(entry, 'alternate') || findValueDeep(entry, ['link', 'id']);
-        if (!urlLicitacion) continue;
-
-        // Extracción de datos detallados
-        const titulo = findValueDeep(entry, ['title', 'summary', 'description']);
-        const numExpediente = findValueDeep(entry, ['contractFolderID', 'id', 'expediente']) || 'S/N';
-        const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto']);
-        const presupuestoBase = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
-        const tipoContrato = findValueDeep(entry, ['contractTypeCode', 'type', 'tipoContrato']) || null;
-        const codigoCpv = findValueDeep(entry, ['itemClassificationCode', 'cpv', 'codigoCPV']) || null;
-        const estadoRaw = findValueDeep(entry, ['contractFolderStatusCode', 'status', 'state', 'estadoLicitacion']);
-        const estadoOficial = mapearEstadoOficial(estadoRaw);
-        const fechaFinRaw = findValueDeep(entry, ['endDate', 'submissionDeadlineDate', 'fechaFinOferta', 'deadline']);
-        const fechaFinOferta = fechaFinRaw ? new Date(fechaFinRaw).toISOString() : null;
-        const provincia = findValueDeep(entry, ['province', 'citySubdivisionName', 'territory', 'provincia']) || null;
-
-        const datosLicitacion = {
-            num_expediente: numExpediente.length > 100 ? numExpediente.substring(0, 100) : numExpediente,
-            objeto_contrato: titulo || 'Sin objeto',
-            presupuesto_base: !isNaN(presupuestoBase) ? presupuestoBase : null,
-            tipo_contrato: tipoContrato,
-            codigo_cpv: codigoCpv,
-            estado_oficial: estadoOficial,
-            url_licitacion: urlLicitacion,
-            fecha_fin_oferta: fechaFinOferta,
-            provincia: provincia,
-            origen: 'PLACSP'
-        };
-
-        // Comprobar si ya existe en Supabase por su URL única
-        const { data: existing, error: selectError } = await supabase
-            .from('licitaciones')
-            .select('id')
-            .eq('url_licitacion', urlLicitacion)
-            .single();
-
-        if (selectError && selectError.code !== 'PGRST116') {
-            continue;
-        }
-
-        if (existing) {
-            // Actualizar estado, presupuesto y datos si ya existe (mantiene al día los cambios diarios)
-            const { error: updateError } = await supabase
-                .from('licitaciones')
-                .update(datosLicitacion)
-                .eq('id', existing.id);
-            if (!updateError) stats.updated++;
-        } else {
-            // Insertar nueva licitación del día
-            const { error: insertError } = await supabase
-                .from('licitaciones')
-                .insert([{ ...datosLicitacion, created_at: new Date().toISOString() }]);
-            if (!insertError) stats.inserted++;
-        }
-    }
-
-    console.log('Sincronización diaria finalizada.');
-    console.log(`Resumen -> Nuevas insertadas: ${stats.inserted} | Existentes actualizadas: ${stats.updated}`);
+    console.log('Sincronización completa finalizada sin desbordamiento.');
+    console.log(`Resumen -> Páginas recorridas: ${pagesProcessed} | Nuevas insertadas: ${stats.inserted} | Existentes actualizadas: ${stats.updated}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
