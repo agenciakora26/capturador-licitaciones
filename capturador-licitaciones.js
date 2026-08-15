@@ -1,6 +1,6 @@
 /**
  * capturador-licitaciones.js
- * Script definitivo ultra-rápido: Upsert por lotes, filtrado 2026 y exclusión de estados pasados.
+ * Script definitivo blindado contra duplicados en lotes y con extracción precisa de la PLACSP.
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -22,7 +22,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
-// Función auxiliar para búsqueda profunda de nodos XML (evitando 'id' genérico para no pillar URLs)
+// Búsqueda profunda optimizada
 function findValueDeep(obj, targetKeys) {
     if (!obj || typeof obj !== 'object') return null;
     const keys = Array.isArray(targetKeys) ? targetKeys : [targetKeys];
@@ -95,14 +95,13 @@ function mapearEstadoOficial(codigoRaw) {
     return 'Publicada';
 }
 
-// Validación para descartar estados ya pasados o cerrados
 function esEstadoPasado(estadoOficial) {
     const estadosPasados = ['Adjudicada', 'Resuelta', 'Desistida', 'Anulada', 'Parcialmente Adjudicada', 'Parcialmente Resuelta', 'Adjudicación Provisional'];
     return estadosPasados.includes(estadoOficial);
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización optimizada (Filtro >= 2026 y sin estados cerrados)...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización ultra-optimizada con control de duplicados en lotes...`);
     
     let currentUrl = INITIAL_ATOM_URL;
     let pagesProcessed = 0;
@@ -119,7 +118,17 @@ async function sincronizarLicitaciones() {
             pagesProcessed++;
             console.log(`Consultando página [${pagesProcessed}]: ${currentUrl}`);
             
-            const response = await fetch(currentUrl, { method: 'GET', headers, redirect: 'follow' });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+            const response = await fetch(currentUrl, { 
+                method: 'GET', 
+                headers, 
+                redirect: 'follow',
+                signal: controller.signal 
+            });
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
                 console.error(`Error HTTP ${response.status} en la página ${pagesProcessed}`);
                 break;
@@ -135,17 +144,16 @@ async function sincronizarLicitaciones() {
             const entries = findEntriesRecursive(jsonObj);
 
             if (entries && entries.length > 0) {
-                let batch = [];
+                // Usamos un Map para filtrar duplicados de URL dentro del mismo lote actual
+                const batchMap = new Map();
 
                 for (const entry of entries) {
                     const urlLicitacion = getLinkHref(entry, 'alternate') || findValueDeep(entry, ['link']);
                     if (!urlLicitacion) continue;
 
-                    // Extracción de fecha de publicación
                     const fechaPubRaw = findValueDeep(entry, ['published', 'updated', 'issueDate', 'fechaPublicacion']) || '';
                     const fechaPub = fechaPubRaw ? new Date(fechaPubRaw) : null;
 
-                    // FILTRO 1: Descartar todo lo anterior a 2026
                     if (fechaPub && !isNaN(fechaPub.getTime())) {
                         if (fechaPub.getFullYear() < 2026) {
                             stats.skippedOldDate++;
@@ -153,17 +161,18 @@ async function sincronizarLicitaciones() {
                         }
                     }
 
-                    // Extracción correcta de campos detallados
-                    const titulo = findValueDeep(entry, ['title', 'summary', 'description']);
-                    const numExpediente = findValueDeep(entry, ['contractFolderID', 'contractFolderId', 'expediente']) || 'S/N';
-                    const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto']);
+                    const titulo = findValueDeep(entry, ['title', 'summary', 'description', 'contractName']);
+                    const numExpediente = findValueDeep(entry, ['contractFolderID', 'contractFolderId', 'expediente', 'id']) || 'S/N';
+                    
+                    const presupuestoRaw = findValueDeep(entry, ['totalAmount', 'taxExclusiveAmount', 'budgetAmount', 'presupuesto', 'payableAmount']);
                     const presupuestoBase = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
+                    
                     const tipoContrato = findValueDeep(entry, ['contractTypeCode', 'type', 'tipoContrato']) || null;
                     const codigoCpv = findValueDeep(entry, ['itemClassificationCode', 'cpv', 'codigoCPV']) || null;
+                    
                     const estadoRaw = findValueDeep(entry, ['contractFolderStatusCode', 'status', 'state', 'estadoLicitacion']);
                     const estadoOficial = mapearEstadoOficial(estadoRaw);
 
-                    // FILTRO 2: Descartar estados pasados / cerrados
                     if (esEstadoPasado(estadoOficial)) {
                         stats.skippedPastStatus++;
                         continue;
@@ -171,9 +180,10 @@ async function sincronizarLicitaciones() {
 
                     const fechaFinRaw = findValueDeep(entry, ['endDate', 'submissionDeadlineDate', 'fechaFinOferta', 'deadline']);
                     const fechaFinOferta = fechaFinRaw ? new Date(fechaFinRaw).toISOString() : null;
-                    const provincia = findValueDeep(entry, ['province', 'citySubdivisionName', 'territory', 'provincia']) || null;
+                    const provincia = findValueDeep(entry, ['province', 'citySubdivisionName', 'territory', 'provincia', 'jurisdictionRegion']) || null;
 
-                    batch.push({
+                    // Guardar en el Map asegurando unicidad de la URL en este lote
+                    batchMap.set(urlLicitacion, {
                         num_expediente: numExpediente.length > 100 ? numExpediente.substring(0, 100) : numExpediente,
                         objeto_contrato: titulo || 'Sin objeto',
                         presupuesto_base: !isNaN(presupuestoBase) ? presupuestoBase : null,
@@ -188,7 +198,8 @@ async function sincronizarLicitaciones() {
                     });
                 }
 
-                // Inserción / Actualización por lotes (Upsert masivo en Supabase)
+                const batch = Array.from(batchMap.values());
+
                 if (batch.length > 0) {
                     const { error: upsertError } = await supabase
                         .from('licitaciones')
@@ -209,13 +220,18 @@ async function sincronizarLicitaciones() {
                 break;
             }
         } catch (error) {
-            console.error(`Error procesando la página ${pagesProcessed}:`, error.message);
-            break;
+            if (error.name === 'AbortError') {
+                console.warn(`[Timeout] La página ${pagesProcessed} tardó demasiado. Saltando...`);
+                continue;
+            } else {
+                console.error(`Error procesando la página ${pagesProcessed}:`, error.message);
+                break;
+            }
         }
     }
 
-    console.log('Sincronización optimizada finalizada con éxito.');
-    console.log(`Resumen -> Páginas recorridas: ${pagesProcessed} | Registros guardados/actualizados: ${stats.processed} | Omitidos (< 2026): ${stats.skippedOldDate} | Omitidos (estado pasado): ${stats.skippedPastStatus}`);
+    console.log('Sincronización finalizada.');
+    console.log(`Resumen -> Páginas: ${pagesProcessed} | Guardados: ${stats.processed} | Omitidos (< 2026): ${stats.skippedOldDate} | Omitidos (estado pasado): ${stats.skippedPastStatus}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
