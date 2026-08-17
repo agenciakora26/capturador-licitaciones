@@ -113,13 +113,11 @@ const mapaSubtiposPatrimonial = {
 };
 
 // ==========================================
-// FUNCIONES DE EXTRACCIÓN
+// FUNCIONES DE EXTRACCIÓN Y LIMPIEZA
 // ==========================================
 
-// Extractor robusto de valores en UBL / JSON parseado
 function findValueDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
-    
     for (const key of Object.keys(obj)) {
         const cleanKey = key.includes(':') ? key.split(':')[1] : key;
         if (cleanKey.toLowerCase() === targetKey.toLowerCase()) {
@@ -141,133 +139,6 @@ function findValueDeep(obj, targetKey) {
     return null;
 }
 
-// Extractor específico para obtener la fecha de fin de oferta de la estructura UBL de PLACSP
-function extractFechaFin(entry) {
-    try {
-        const tenderingProcess = findObjectDeep(entry, 'TenderingProcess');
-        if (tenderingProcess) {
-            const deadlinePeriod = findObjectDeep(tenderingProcess, 'TenderSubmissionDeadlinePeriod');
-            if (deadlinePeriod) {
-                const endDate = findValueDeep(deadlinePeriod, 'EndDate');
-                if (endDate) {
-                    const endTime = findValueDeep(deadlinePeriod, 'EndTime');
-                    if (endTime) {
-                        return `${endDate}T${endTime}`;
-                    }
-                    return endDate;
-                }
-            }
-        }
-        return findValueDeep(entry, 'SubmissionDeadlineDate') || findValueDeep(entry, 'Deadline');
-    } catch (e) {
-        return null;
-    }
-}
-
-// Extractor del Tipo de Contrato oficial
-function extractTipoContrato(entry) {
-    let tipo = findValueDeep(entry, 'ContractTypeCode') || 
-               findValueDeep(entry, 'TypeCode') || 
-               findValueDeep(entry, 'TipoContrato');
-               
-    if (tipo) {
-        const codigoLimpio = String(tipo).trim();
-        if (mapaTiposContrato[codigoLimpio]) {
-            return mapaTiposContrato[codigoLimpio];
-        }
-        return codigoLimpio;
-    }
-    
-    const summary = findValueDeep(entry, 'Summary') || '';
-    const lowerSummary = summary.toLowerCase();
-    if (lowerSummary.includes('obras')) return 'Obras';
-    if (lowerSummary.includes('suministro')) return 'Suministros';
-    if (lowerSummary.includes('servicios')) return 'Servicios';
-    
-    return null;
-}
-
-// Extractor del Subtipo de Contrato según el tipo principal
-function extractSubtipo(entry, tipoContrato) {
-    if (!tipoContrato) return 'General';
-    
-    const codigoSubtipo = findValueDeep(entry, 'SubTypeCode') || findValueDeep(entry, 'ServiceContractCode');
-    const codigoLimpio = codigoSubtipo ? String(codigoSubtipo).trim() : null;
-
-    if (!codigoLimpio) return 'General';
-
-    switch (tipoContrato) {
-        case 'Suministros':
-            return mapaSubtiposSuministros[codigoLimpio] || 'General';
-        case 'Obras':
-            return mapaSubtiposObras[codigoLimpio] || 'General';
-        case 'Servicios':
-            return mapaSubtiposServicios[codigoLimpio] || 'General';
-        case 'Patrimonial':
-            return mapaSubtiposPatrimonial[codigoLimpio] || 'General';
-        default:
-            return 'General';
-    }
-}
-
-// Extractor actualizado para el estado oficial real de la licitación
-function extractEstadoOficial(entry) {
-    const mapaEstados = {
-        'CREA': 'Creada',
-        'PRE': 'Anuncio Previo',
-        'PUB': 'Publicada',
-        'EV_PRE': 'Evaluación Previa',
-        'EV': 'Evaluación',
-        'ADJ': 'Adjudicada',
-        'ADJ_PAR': 'Parcialmente Adjudicada',
-        'PAR_RES': 'Adjudicación Provisional',
-        'RES': 'Resuelta',
-        'RES_PAR': 'Parcialmente Resuelta',
-        'DES': 'Desistida',
-        'CERR': 'Cerrada',
-        'ANUL': 'Anulada'
-    };
-
-    const codigo = findValueDeep(entry, 'ContractFolderStatusCode');
-    if (codigo && mapaEstados[codigo.trim()]) {
-        return mapaEstados[codigo.trim()];
-    }
-
-    const summary = (findValueDeep(entry, 'Summary') || '').toUpperCase();
-    if (summary.includes('ESTADO: RES_PAR')) return 'Parcialmente Resuelta';
-    if (summary.includes('ESTADO: PAR_RES')) return 'Adjudicación Provisional';
-    if (summary.includes('ESTADO: ADJ_PAR')) return 'Parcialmente Adjudicada';
-    if (summary.includes('ESTADO: EV_PRE')) return 'Evaluación Previa';
-    if (summary.includes('ESTADO: CREA')) return 'Creada';
-    if (summary.includes('ESTADO: PRE')) return 'Anuncio Previo';
-    if (summary.includes('ESTADO: PUB')) return 'Publicada';
-    if (summary.includes('ESTADO: EV')) return 'Evaluación';
-    if (summary.includes('ESTADO: ADJ')) return 'Adjudicada';
-    if (summary.includes('ESTADO: RES')) return 'Resuelta';
-    if (summary.includes('ESTADO: DES')) return 'Desistida';
-    if (summary.includes('ESTADO: CERR')) return 'Cerrada';
-    if (summary.includes('ESTADO: ANUL')) return 'Anulada';
-
-    return 'Consultar Pliego';
-}
-
-function extractLinkUrl(entry) {
-    if (!entry) return null;
-    let linkField = entry.link;
-    if (!linkField && entry.entry) linkField = entry.entry.link;
-    if (!linkField) linkField = findObjectDeep(entry, 'link');
-    if (!linkField) return null;
-    
-    const links = Array.isArray(linkField) ? linkField : [linkField];
-    const targetLink = links.find(l => l && (l['@_rel'] === 'alternate' || !l['@_rel'])) || links[0];
-    
-    if (targetLink) {
-        if (typeof targetLink === 'string') return targetLink.trim();
-        return targetLink['@_href'] || targetLink['href'] || null;
-    }
-    return null;
-}
-
 function findObjectDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
     for (const key of Object.keys(obj)) {
@@ -279,6 +150,124 @@ function findObjectDeep(obj, targetKey) {
         }
     }
     return null;
+}
+
+// NUEVAS FUNCIONES DE PROVINCIA INTELIGENTE
+function esEspanaOInvalido(texto) {
+    if (!texto) return true;
+    const t = texto.toLowerCase().trim();
+    // Filtramos variaciones de "España" o cadenas demasiado cortas
+    return t === 'españa' || t === 'espaã±a' || t === 'espana' || t.length <= 1;
+}
+
+function limpiarProvincia(texto) {
+    if (!texto) return null;
+    // Corrección de Mojibake (codificación rota)
+    let corregido = texto
+        .replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
+        .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
+        .replace(/Ã/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
+        .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ');
+
+    // Manejo de bilingüismo (ej: Alicante/Alacant -> Alicante)
+    let limpia = corregido.split('/')[0].trim();
+    
+    // Capitalización
+    return limpia.charAt(0).toUpperCase() + limpia.slice(1).toLowerCase();
+}
+
+function extractProvincia(entry) {
+    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode'];
+    
+    // 1. Intentar buscar en bloques de ubicación específicos
+    for (const blockName of locationBlocks) {
+        const block = findObjectDeep(entry, blockName);
+        if (block) {
+            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province');
+            if (subentity) {
+                if (subentity.toLowerCase().includes('extra-regio')) return 'España';
+                if (!esEspanaOInvalido(subentity)) return limpiarProvincia(subentity);
+            }
+        }
+    }
+
+    // 2. Búsqueda global en la entrada
+    const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province');
+    if (subentityGlobal) {
+        if (subentityGlobal.toLowerCase().includes('extra-regio')) return 'España';
+        if (!esEspanaOInvalido(subentityGlobal)) return limpiarProvincia(subentityGlobal);
+    }
+
+    return null;
+}
+
+function extractFechaFin(entry) {
+    try {
+        const tenderingProcess = findObjectDeep(entry, 'TenderingProcess');
+        if (tenderingProcess) {
+            const deadlinePeriod = findObjectDeep(tenderingProcess, 'TenderSubmissionDeadlinePeriod');
+            if (deadlinePeriod) {
+                const endDate = findValueDeep(deadlinePeriod, 'EndDate');
+                if (endDate) {
+                    const endTime = findValueDeep(deadlinePeriod, 'EndTime');
+                    return endTime ? `${endDate}T${endTime}` : endDate;
+                }
+            }
+        }
+        return findValueDeep(entry, 'SubmissionDeadlineDate') || findValueDeep(entry, 'Deadline');
+    } catch (e) { return null; }
+}
+
+function extractTipoContrato(entry) {
+    let tipo = findValueDeep(entry, 'ContractTypeCode') || findValueDeep(entry, 'TypeCode') || findValueDeep(entry, 'TipoContrato');
+    if (tipo) {
+        const codigoLimpio = String(tipo).trim();
+        return mapaTiposContrato[codigoLimpio] || codigoLimpio;
+    }
+    const summary = (findValueDeep(entry, 'Summary') || '').toLowerCase();
+    if (summary.includes('obras')) return 'Obras';
+    if (summary.includes('suministro')) return 'Suministros';
+    if (summary.includes('servicios')) return 'Servicios';
+    return null;
+}
+
+function extractSubtipo(entry, tipoContrato) {
+    if (!tipoContrato) return 'General';
+    const codigoSubtipo = findValueDeep(entry, 'SubTypeCode') || findValueDeep(entry, 'ServiceContractCode');
+    const codigoLimpio = codigoSubtipo ? String(codigoSubtipo).trim() : null;
+    if (!codigoLimpio) return 'General';
+    switch (tipoContrato) {
+        case 'Suministros': return mapaSubtiposSuministros[codigoLimpio] || 'General';
+        case 'Obras': return mapaSubtiposObras[codigoLimpio] || 'General';
+        case 'Servicios': return mapaSubtiposServicios[codigoLimpio] || 'General';
+        case 'Patrimonial': return mapaSubtiposPatrimonial[codigoLimpio] || 'General';
+        default: return 'General';
+    }
+}
+
+function extractEstadoOficial(entry) {
+    const mapaEstados = { 'CREA': 'Creada', 'PRE': 'Anuncio Previo', 'PUB': 'Publicada', 'EV_PRE': 'Evaluación Previa', 'EV': 'Evaluación', 'ADJ': 'Adjudicada', 'ADJ_PAR': 'Parcialmente Adjudicada', 'PAR_RES': 'Adjudicación Provisional', 'RES': 'Resuelta', 'RES_PAR': 'Parcialmente Resuelta', 'DES': 'Desistida', 'CERR': 'Cerrada', 'ANUL': 'Anulada' };
+    const codigo = findValueDeep(entry, 'ContractFolderStatusCode');
+    if (codigo && mapaEstados[codigo.trim()]) return mapaEstados[codigo.trim()];
+    const summary = (findValueDeep(entry, 'Summary') || '').toUpperCase();
+    if (summary.includes('ESTADO: RES_PAR')) return 'Parcialmente Resuelta';
+    if (summary.includes('ESTADO: PAR_RES')) return 'Adjudicación Provisional';
+    if (summary.includes('ESTADO: ADJ_PAR')) return 'Parcialmente Adjudicada';
+    if (summary.includes('ESTADO: EV_PRE')) return 'Evaluación Previa';
+    if (summary.includes('ESTADO: PUB')) return 'Publicada';
+    if (summary.includes('ESTADO: ADJ')) return 'Adjudicada';
+    if (summary.includes('ESTADO: RES')) return 'Resuelta';
+    if (summary.includes('ESTADO: DES')) return 'Desistida';
+    return 'Consultar Pliego';
+}
+
+function extractLinkUrl(entry) {
+    if (!entry) return null;
+    let linkField = entry.link || (entry.entry ? entry.entry.link : null) || findObjectDeep(entry, 'link');
+    if (!linkField) return null;
+    const links = Array.isArray(linkField) ? linkField : [linkField];
+    const targetLink = links.find(l => l && (l['@_rel'] === 'alternate' || !l['@_rel'])) || links[0];
+    return typeof targetLink === 'string' ? targetLink.trim() : (targetLink['@_href'] || targetLink['href'] || null);
 }
 
 function findEntriesRecursive(obj) {
@@ -308,8 +297,7 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando captura completa (tipos, subtipos, estados y plazos)...`);
-    
+    console.log(`[${new Date().toISOString()}] Iniciando captura optimizada...`);
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
@@ -318,43 +306,25 @@ async function sincronizarLicitaciones() {
     while (currentUrl) {
         pageCount++;
         console.log(`\n--- Procesando Página ${pageCount} ---`);
-        console.log(`URL: ${currentUrl}`);
-
         try {
             const response = await fetch(currentUrl, { headers, redirect: 'follow' });
-            if (!response.ok) {
-                console.error(`Error HTTP ${response.status} al descargar la página.`);
-                break;
-            }
+            if (!response.ok) break;
 
             const rawText = await response.text();
             const jsonObj = parser.parse(rawText);
             const entries = findEntriesRecursive(jsonObj);
             
-            if (!entries || entries.length === 0) {
-                console.log('No se encontraron entradas en esta página.');
-                break;
-            }
+            if (!entries || entries.length === 0) break;
 
             const batchMap = new Map();
-            let skippedOld = 0;
-            let skippedNoUrl = 0;
-
             for (const entry of entries) {
                 const pubDateRaw = findValueDeep(entry, 'Published') || findValueDeep(entry, 'IssueDate') || findValueDeep(entry, 'updated');
                 const pubDate = pubDateRaw ? new Date(pubDateRaw) : null;
                 
-                // Filtro estricto 2026 en adelante
-                if (!pubDate || isNaN(pubDate.getTime()) || pubDate.getFullYear() < 2026) {
-                    skippedOld++;
-                    continue;
-                }
+                if (!pubDate || isNaN(pubDate.getTime()) || pubDate.getFullYear() < 2026) continue;
 
                 const url = extractLinkUrl(entry);
-                if (!url) {
-                    skippedNoUrl++;
-                    continue;
-                }
+                if (!url) continue;
 
                 const rawTitle = findValueDeep(entry, 'Title') || '';
                 const objetoContrato = rawTitle.replace(/Id licitación: [^;]+; /i, '').substring(0, 500);
@@ -364,11 +334,11 @@ async function sincronizarLicitaciones() {
                 const subtipoContrato = extractSubtipo(entry, tipoContrato);
                 const estadoOficial = extractEstadoOficial(entry);
                 const cpv = findValueDeep(entry, 'ItemClassificationCode');
-                
                 const fechaFinRaw = extractFechaFin(entry);
                 const fechaFinISO = fechaFinRaw && !isNaN(new Date(fechaFinRaw).getTime()) ? new Date(fechaFinRaw).toISOString() : null;
-
-                const provincia = findValueDeep(entry, 'CitySubdivisionName') || findValueDeep(entry, 'Province') || findValueDeep(entry, 'CountrySubentity');
+                
+                // NUEVA LLAMADA INTELIGENTE A PROVINCIA
+                const provincia = extractProvincia(entry);
                 
                 const presupuestoRaw = findValueDeep(entry, 'TotalAmount') || findValueDeep(entry, 'TaxExclusiveAmount');
                 const presupuesto = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
@@ -389,30 +359,15 @@ async function sincronizarLicitaciones() {
                 });
             }
 
-            const batch = Array.from(batchMap.values());
-            console.log(`Filtro -> Omitidos (<2026): ${skippedOld} | Sin URL: ${skippedNoUrl} | Válidos para upsert: ${batch.length}`);
-
-            if (batch.length > 0) {
-                console.log('Enviando lote a Supabase (actualizando tipos, subtipos, estados y plazos)...');
-                const { error: upsertError } = await supabase
-                    .from('licitaciones')
-                    .upsert(batch, { onConflict: 'url_licitacion' });
-
-                if (upsertError) {
-                    console.error('Error al insertar en Supabase:', upsertError.message);
-                } else {
-                    console.log(`¡Lote de ${batch.length} licitaciones sincronizado con éxito!`);
-                }
+            if (batchMap.size > 0) {
+                const { error } = await supabase.from('licitaciones').upsert(Array.from(batchMap.values()), { onConflict: 'url_licitacion' });
+                if (error) console.error('Error Supabase:', error.message);
+                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones.`);
             }
 
             currentUrl = getNextPageUrl(jsonObj);
-            if (!currentUrl) {
-                console.log('No hay más páginas siguientes. Sincronización completada.');
-                break;
-            }
-
         } catch (error) {
-            console.error('Excepción en ciclo:', error);
+            console.error('Error en ciclo:', error);
             break;
         }
     }
