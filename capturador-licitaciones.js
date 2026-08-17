@@ -146,6 +146,16 @@ const mapaSubtiposPatrimonial = {
     '100': 'Otros contratos patrimoniales'
 };
 
+const PROVINCIAS_ESPANA = [
+    'Álava', 'Albacete', 'Alicante', 'Almería', 'Asturias', 'Ávila', 'Badajoz', 'Barcelona', 
+    'Burgos', 'Cáceres', 'Cádiz', 'Cantabria', 'Castellón', 'Ciudad Real', 'Córdoba', 'Cuenca', 
+    'Girona', 'Granada', 'Guadalajara', 'Guipúzcoa', 'Huelva', 'Huesca', 'Jaén', 'La Rioja', 
+    'Las Palmas', 'León', 'Lleida', 'Lugo', 'Madrid', 'Málaga', 'Murcia', 'Navarra', 'Ourense', 
+    'Palencia', 'Pontevedra', 'Salamanca', 'Santa Cruz de Tenerife', 'Segovia', 'Sevilla', 
+    'Soria', 'Tarragona', 'Teruel', 'Toledo', 'Valencia', 'Valladolid', 'Vizcaya', 'Zamora', 
+    'Zaragoza', 'Ceuta', 'Melilla', 'Baleares', 'Mallorca', 'Menorca', 'Ibiza'
+];
+
 // ==========================================
 // FUNCIONES DE EXTRACCIÓN Y LIMPIEZA
 // ==========================================
@@ -211,20 +221,30 @@ function extractProvincia(entry) {
         const block = findObjectDeep(entry, blockName);
         if (block) {
             const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province');
-            if (subentity) {
-                if (subentity.toLowerCase().includes('extra-regio')) return 'España';
-                if (!esEspanaOInvalido(subentity)) return limpiarProvincia(subentity);
+            if (subentity && !subentity.toLowerCase().includes('extra-regio') && !esEspanaOInvalido(subentity)) {
+                return limpiarProvincia(subentity);
             }
         }
     }
 
     const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province');
-    if (subentityGlobal) {
-        if (subentityGlobal.toLowerCase().includes('extra-regio')) return 'España';
-        if (!esEspanaOInvalido(subentityGlobal)) return limpiarProvincia(subentityGlobal);
+    if (subentityGlobal && !subentityGlobal.toLowerCase().includes('extra-regio') && !esEspanaOInvalido(subentityGlobal)) {
+        return limpiarProvincia(subentityGlobal);
     }
 
-    return null;
+    // Plan B: Búsqueda inteligente en el órgano de contratación y resumen
+    const partyName = findValueDeep(entry, 'PartyName') || findValueDeep(entry, 'Name') || findValueDeep(entry, 'ContractingParty') || '';
+    const summary = findValueDeep(entry, 'Summary') || '';
+    const textoCompleto = `${partyName} ${summary}`;
+
+    for (const provincia of PROVINCIAS_ESPANA) {
+        const regex = new RegExp(`\\b${provincia}\\b`, 'i');
+        if (regex.test(textoCompleto)) {
+            return provincia;
+        }
+    }
+
+    return 'España';
 }
 
 function extractTipoProcedimiento(entry) {
@@ -353,10 +373,10 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada con Tipos de Anuncio y Procedimiento...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada con detección inteligente de provincia...`);
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
-    const MAX_PAGES = 3; // Límite estricto para ejecución diaria rápida
+    const MAX_PAGES = 3;
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
     const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
 
@@ -422,7 +442,7 @@ async function sincronizarLicitaciones() {
             if (batchMap.size > 0) {
                 const { error } = await supabase.from('licitaciones').upsert(Array.from(batchMap.values()), { onConflict: 'url_licitacion' });
                 if (error) console.error('Error Supabase:', error.message);
-                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones con tipo de anuncio.`);
+                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones con provincia inteligente.`);
             }
 
             if (pageCount >= MAX_PAGES) {
