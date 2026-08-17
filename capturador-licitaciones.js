@@ -297,15 +297,18 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando captura optimizada...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada...`);
+    
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
+    const MAX_PAGES = 3; // Límite estricto para sincronización diaria (ajustable)
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
     const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
 
-    while (currentUrl) {
+    while (currentUrl && pageCount < MAX_PAGES) {
         pageCount++;
-        console.log(`\n--- Procesando Página ${pageCount} ---`);
+        console.log(`\n--- Procesando Página ${pageCount} de ${MAX_PAGES} ---`);
+        
         try {
             const response = await fetch(currentUrl, { headers, redirect: 'follow' });
             if (!response.ok) break;
@@ -321,6 +324,7 @@ async function sincronizarLicitaciones() {
                 const pubDateRaw = findValueDeep(entry, 'Published') || findValueDeep(entry, 'IssueDate') || findValueDeep(entry, 'updated');
                 const pubDate = pubDateRaw ? new Date(pubDateRaw) : null;
                 
+                // Filtro de seguridad para 2026
                 if (!pubDate || isNaN(pubDate.getTime()) || pubDate.getFullYear() < 2026) continue;
 
                 const url = extractLinkUrl(entry);
@@ -337,7 +341,6 @@ async function sincronizarLicitaciones() {
                 const fechaFinRaw = extractFechaFin(entry);
                 const fechaFinISO = fechaFinRaw && !isNaN(new Date(fechaFinRaw).getTime()) ? new Date(fechaFinRaw).toISOString() : null;
                 
-                // NUEVA LLAMADA INTELIGENTE A PROVINCIA
                 const provincia = extractProvincia(entry);
                 
                 const presupuestoRaw = findValueDeep(entry, 'TotalAmount') || findValueDeep(entry, 'TaxExclusiveAmount');
@@ -365,6 +368,12 @@ async function sincronizarLicitaciones() {
                 else console.log(`Sincronizado lote de ${batchMap.size} licitaciones.`);
             }
 
+            // Si llegamos al límite de páginas, paramos intencionadamente
+            if (pageCount >= MAX_PAGES) {
+                console.log('Límite de páginas diarias alcanzado. Finalizando sincronización.');
+                break;
+            }
+
             currentUrl = getNextPageUrl(jsonObj);
         } catch (error) {
             console.error('Error en ciclo:', error);
@@ -372,5 +381,4 @@ async function sincronizarLicitaciones() {
         }
     }
 }
-
 export { sincronizarLicitaciones as ejecutarCapturadorLicitaciones };
