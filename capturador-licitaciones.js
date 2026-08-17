@@ -318,7 +318,7 @@ async function sincronizarLicitaciones() {
     console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada...`);
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
-    const MAX_PAGES = 3; // Límite estricto para evitar procesos largos
+    const MAX_PAGES = 3; // Límite estricto para ejecución diaria rápida
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
     const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
 
