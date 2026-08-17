@@ -35,6 +35,23 @@ const mapaTiposContrato = {
     '50': 'Patrimonial'
 };
 
+const mapaTiposProcedimiento = {
+    '1': 'Abierto',
+    '9': 'Abierto simplificado',
+    '10': 'Asociación para la innovación',
+    '7': 'Basado en Acuerdo Marco',
+    '12': 'Basado en sistema dinámico de adquisición',
+    '8': 'Concurso de proyectos',
+    '11': 'Derivado de asociación para la innovación',
+    '5': 'Diálogo competitivo',
+    '13': 'Licitación con negociación',
+    '4': 'Negociado con publicidad',
+    '3': 'Negociado sin publicidad',
+    '100': 'Normas Internas',
+    '999': 'Otros',
+    '2': 'Restringido'
+};
+
 const mapaSubtiposSuministros = {
     '1': 'Alquiler',
     '2': 'Adquisición'
@@ -152,34 +169,27 @@ function findObjectDeep(obj, targetKey) {
     return null;
 }
 
-// NUEVAS FUNCIONES DE PROVINCIA INTELIGENTE
 function esEspanaOInvalido(texto) {
     if (!texto) return true;
     const t = texto.toLowerCase().trim();
-    // Filtramos variaciones de "España" o cadenas demasiado cortas
     return t === 'españa' || t === 'espaã±a' || t === 'espana' || t.length <= 1;
 }
 
 function limpiarProvincia(texto) {
     if (!texto) return null;
-    // Corrección de Mojibake (codificación rota)
     let corregido = texto
         .replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
         .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
         .replace(/Ã/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
         .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ');
 
-    // Manejo de bilingüismo (ej: Alicante/Alacant -> Alicante)
     let limpia = corregido.split('/')[0].trim();
-    
-    // Capitalización
     return limpia.charAt(0).toUpperCase() + limpia.slice(1).toLowerCase();
 }
 
 function extractProvincia(entry) {
     const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode'];
     
-    // 1. Intentar buscar en bloques de ubicación específicos
     for (const blockName of locationBlocks) {
         const block = findObjectDeep(entry, blockName);
         if (block) {
@@ -191,7 +201,6 @@ function extractProvincia(entry) {
         }
     }
 
-    // 2. Búsqueda global en la entrada
     const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province');
     if (subentityGlobal) {
         if (subentityGlobal.toLowerCase().includes('extra-regio')) return 'España';
@@ -199,6 +208,15 @@ function extractProvincia(entry) {
     }
 
     return null;
+}
+
+function extractTipoProcedimiento(entry) {
+    let codigo = findValueDeep(entry, 'ProcedureCode');
+    if (codigo) {
+        const codigoLimpio = String(codigo).trim();
+        return mapaTiposProcedimiento[codigoLimpio] || codigoLimpio;
+    }
+    return 'General';
 }
 
 function extractFechaFin(entry) {
@@ -298,17 +316,15 @@ function getNextPageUrl(jsonObj) {
 
 async function sincronizarLicitaciones() {
     console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada...`);
-    
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
-    const MAX_PAGES = 3; // Límite estricto para sincronización diaria (ajustable)
+    const MAX_PAGES = 3; // Límite estricto para evitar procesos largos
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', removeNamespace: true });
     const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
 
     while (currentUrl && pageCount < MAX_PAGES) {
         pageCount++;
         console.log(`\n--- Procesando Página ${pageCount} de ${MAX_PAGES} ---`);
-        
         try {
             const response = await fetch(currentUrl, { headers, redirect: 'follow' });
             if (!response.ok) break;
@@ -324,7 +340,6 @@ async function sincronizarLicitaciones() {
                 const pubDateRaw = findValueDeep(entry, 'Published') || findValueDeep(entry, 'IssueDate') || findValueDeep(entry, 'updated');
                 const pubDate = pubDateRaw ? new Date(pubDateRaw) : null;
                 
-                // Filtro de seguridad para 2026
                 if (!pubDate || isNaN(pubDate.getTime()) || pubDate.getFullYear() < 2026) continue;
 
                 const url = extractLinkUrl(entry);
@@ -336,6 +351,7 @@ async function sincronizarLicitaciones() {
                 const numExpediente = findValueDeep(entry, 'ContractFolderID') || findValueDeep(entry, 'ID') || 'S/N';
                 const tipoContrato = extractTipoContrato(entry);
                 const subtipoContrato = extractSubtipo(entry, tipoContrato);
+                const tipoProcedimiento = extractTipoProcedimiento(entry);
                 const estadoOficial = extractEstadoOficial(entry);
                 const cpv = findValueDeep(entry, 'ItemClassificationCode');
                 const fechaFinRaw = extractFechaFin(entry);
@@ -352,6 +368,7 @@ async function sincronizarLicitaciones() {
                     presupuesto_base: !isNaN(presupuesto) ? presupuesto : null,
                     tipo_contrato: tipoContrato ? tipoContrato.substring(0, 100) : null,
                     subtipo_contrato: subtipoContrato ? subtipoContrato.substring(0, 100) : 'General',
+                    tipo_procedimiento: tipoProcedimiento ? tipoProcedimiento.substring(0, 100) : 'General',
                     codigo_cpv: cpv ? cpv.substring(0, 50) : null,
                     estado_oficial: estadoOficial ? estadoOficial.substring(0, 100) : 'Publicada',
                     fecha_fin_oferta: fechaFinISO,
@@ -368,7 +385,6 @@ async function sincronizarLicitaciones() {
                 else console.log(`Sincronizado lote de ${batchMap.size} licitaciones.`);
             }
 
-            // Si llegamos al límite de páginas, paramos intencionadamente
             if (pageCount >= MAX_PAGES) {
                 console.log('Límite de páginas diarias alcanzado. Finalizando sincronización.');
                 break;
@@ -381,4 +397,5 @@ async function sincronizarLicitaciones() {
         }
     }
 }
+
 export { sincronizarLicitaciones as ejecutarCapturadorLicitaciones };
