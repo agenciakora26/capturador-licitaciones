@@ -52,6 +52,23 @@ const mapaTiposProcedimiento = {
     '2': 'Restringido'
 };
 
+const mapaTiposAnuncio = {
+    'LICI_PLA': 'Licitaciones en plazo',
+    'DOC_PIN': 'Anuncio Previo',
+    'DOC_PIN_RTL': 'Anuncio de información previa con reducción de plazos',
+    'DOC_CN': 'Anuncio de Licitación',
+    'DOC_CD': 'Pliego/Documento Descriptivo',
+    'DOC_CAN_PROV': 'Anuncio Adjudicación Provisional',
+    'DOC_CAN_DEF': 'Anuncio Adjudicación Definitiva',
+    'DOC_CAN_ADJ': 'Anuncio Adjudicación',
+    'DOC_FORM': 'Anuncio de Formalización',
+    'DOC_MOD': 'Anuncio Modificación de Contrato',
+    'DOC_CCN': 'Anuncio de finalización de contrato',
+    'DESIERTO': 'Desierto',
+    'RENUNCIA': 'Renuncia',
+    'DESISTIMIENTO': 'Desistimiento'
+};
+
 const mapaSubtiposSuministros = {
     '1': 'Alquiler',
     '2': 'Adquisición'
@@ -219,6 +236,27 @@ function extractTipoProcedimiento(entry) {
     return 'General';
 }
 
+function extractTipoAnuncio(entry) {
+    let codigo = findValueDeep(entry, 'NoticeTypeCode') || findValueDeep(entry, 'DocumentTypeCode') || findValueDeep(entry, 'TypeCode');
+    
+    if (!codigo && entry.category) {
+        const cats = Array.isArray(entry.category) ? entry.category : [entry.category];
+        for (const cat of cats) {
+            const term = cat['@_term'] || cat.term;
+            if (term && mapaTiposAnuncio[term.trim()]) {
+                codigo = term.trim();
+                break;
+            }
+        }
+    }
+
+    if (codigo) {
+        const codigoLimpio = String(codigo).trim();
+        return mapaTiposAnuncio[codigoLimpio] || codigoLimpio;
+    }
+    return 'Anuncio de Licitación';
+}
+
 function extractFechaFin(entry) {
     try {
         const tenderingProcess = findObjectDeep(entry, 'TenderingProcess');
@@ -315,7 +353,7 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada con Tipos de Anuncio y Procedimiento...`);
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
     const MAX_PAGES = 3; // Límite estricto para ejecución diaria rápida
@@ -352,6 +390,7 @@ async function sincronizarLicitaciones() {
                 const tipoContrato = extractTipoContrato(entry);
                 const subtipoContrato = extractSubtipo(entry, tipoContrato);
                 const tipoProcedimiento = extractTipoProcedimiento(entry);
+                const tipoAnuncio = extractTipoAnuncio(entry);
                 const estadoOficial = extractEstadoOficial(entry);
                 const cpv = findValueDeep(entry, 'ItemClassificationCode');
                 const fechaFinRaw = extractFechaFin(entry);
@@ -369,6 +408,7 @@ async function sincronizarLicitaciones() {
                     tipo_contrato: tipoContrato ? tipoContrato.substring(0, 100) : null,
                     subtipo_contrato: subtipoContrato ? subtipoContrato.substring(0, 100) : 'General',
                     tipo_procedimiento: tipoProcedimiento ? tipoProcedimiento.substring(0, 100) : 'General',
+                    tipo_anuncio: tipoAnuncio ? tipoAnuncio.substring(0, 100) : 'Anuncio de Licitación',
                     codigo_cpv: cpv ? cpv.substring(0, 50) : null,
                     estado_oficial: estadoOficial ? estadoOficial.substring(0, 100) : 'Publicada',
                     fecha_fin_oferta: fechaFinISO,
@@ -382,7 +422,7 @@ async function sincronizarLicitaciones() {
             if (batchMap.size > 0) {
                 const { error } = await supabase.from('licitaciones').upsert(Array.from(batchMap.values()), { onConflict: 'url_licitacion' });
                 if (error) console.error('Error Supabase:', error.message);
-                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones.`);
+                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones con tipo de anuncio.`);
             }
 
             if (pageCount >= MAX_PAGES) {
