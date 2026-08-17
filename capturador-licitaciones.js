@@ -95,22 +95,59 @@ function extractTipoContrato(entry) {
     return null;
 }
 
-// Extractor para el estado oficial real de la licitación
+// Extractor actualizado para el estado oficial real de la licitación
 function extractEstadoOficial(entry) {
-    let estado = findValueDeep(entry, 'TenderResultCode') || 
-                 findValueDeep(entry, 'ProjectLifecycleStatusCode') || 
-                 findValueDeep(entry, 'StateCode') ||
-                 findValueDeep(entry, 'CurrentStatusCode');
+    // 1. Buscar en etiquetas específicas de estado de la estructura UBL / PLACSP
+    let codigoEstado = findValueDeep(entry, 'ContractFolderStatusCode') || 
+                       findValueDeep(entry, 'ProjectLifecycleStatusCode') || 
+                       findValueDeep(entry, 'TenderResultCode') || 
+                       findValueDeep(entry, 'StateCode') ||
+                       findValueDeep(entry, 'CurrentStatusCode') ||
+                       findValueDeep(entry, 'StatusCode');
 
-    if (estado) return estado;
+    if (codigoEstado) {
+        const lowerCode = String(codigoEstado).toLowerCase();
+        if (lowerCode.includes('anuncioprevio')) return 'Anuncio Previo';
+        if (lowerCode.includes('evaluacionprevia')) return 'Evaluación Previa';
+        if (lowerCode.includes('evaluacion')) return 'Evaluación';
+        if (lowerCode.includes('parcialmenteadjudicada')) return 'Parcialmente Adjudicada';
+        if (lowerCode.includes('adjudicacionprovisional')) return 'Adjudicación Provisional';
+        if (lowerCode.includes('adjudicada')) return 'Adjudicada';
+        if (lowerCode.includes('parcialmenteresuelta')) return 'Parcialmente Resuelta';
+        if (lowerCode.includes('resuelta')) return 'Resuelta';
+        if (lowerCode.includes('desistida')) return 'Desistida';
+        if (lowerCode.includes('cerrada')) return 'Cerrada';
+        if (lowerCode.includes('anulada')) return 'Anulada';
+        if (lowerCode.includes('creada')) return 'Creada';
+        if (lowerCode.includes('publicada')) return 'Publicada';
+    }
 
-    const summary = (findValueDeep(entry, 'Summary') || '').toLowerCase();
-    if (summary.includes('adjudicada')) return 'Adjudicada';
-    if (summary.includes('resuelta')) return 'Resuelta';
-    if (summary.includes('anulada')) return 'Anulada';
-    if (summary.includes('licitación')) return 'Publicada';
+    // 2. Análisis exhaustivo del texto (Summary, Title y Description) con todo el listado oficial
+    const textoCompleto = (
+        (findValueDeep(entry, 'Summary') || '') + ' ' + 
+        (findValueDeep(entry, 'Title') || '') + ' ' +
+        (findValueDeep(entry, 'Description') || '')
+    ).toLowerCase();
 
-    return 'Publicada';
+    // Ordenado de más específico a más genérico para evitar falsos positivos
+    if (textoCompleto.includes('parcialmente adjudicada')) return 'Parcialmente Adjudicada';
+    if (textoCompleto.includes('adjudicación provisional') || textoCompleto.includes('adjudicacion provisional')) return 'Adjudicación Provisional';
+    if (textoCompleto.includes('adjudicada')) return 'Adjudicada';
+    
+    if (textoCompleto.includes('parcialmente resuelta')) return 'Parcialmente Resuelta';
+    if (textoCompleto.includes('resuelta')) return 'Resuelta';
+    
+    if (textoCompleto.includes('evaluación previa') || textoCompleto.includes('evaluacion previa')) return 'Evaluación Previa';
+    if (textoCompleto.includes('evaluación') || textoCompleto.includes('evaluacion')) return 'Evaluación';
+    
+    if (textoCompleto.includes('anuncio previo')) return 'Anuncio Previo';
+    if (textoCompleto.includes('desistida')) return 'Desistida';
+    if (textoCompleto.includes('cerrada')) return 'Cerrada';
+    if (textoCompleto.includes('anulada')) return 'Anulada';
+    if (textoCompleto.includes('creada')) return 'Creada';
+    if (textoCompleto.includes('publicada') || textoCompleto.includes('licitación')) return 'Publicada';
+
+    return 'Consultar Pliego'; // Valor por defecto si ninguna condición coincide
 }
 
 function extractLinkUrl(entry) {
