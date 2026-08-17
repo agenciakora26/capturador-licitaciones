@@ -17,17 +17,62 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
+// Extractor robusto de valores en UBL / JSON parseado
 function findValueDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
     
     for (const key of Object.keys(obj)) {
-        if (key.toLowerCase().endsWith(':' + targetKey.toLowerCase()) || key.toLowerCase() === targetKey.toLowerCase()) {
+        const cleanKey = key.includes(':') ? key.split(':')[1] : key;
+        if (cleanKey.toLowerCase() === targetKey.toLowerCase()) {
             const val = obj[key];
-            if (val && typeof val === 'object' && val['#text']) return String(val['#text']).trim();
-            return String(val).trim();
+            if (val !== null && val !== undefined) {
+                if (typeof val === 'object') {
+                    if (val['#text'] !== undefined) return String(val['#text']).trim();
+                    if (val['@_value'] !== undefined) return String(val['@_value']).trim();
+                    return null;
+                }
+                return String(val).trim();
+            }
         }
         if (typeof obj[key] === 'object') {
             const found = findValueDeep(obj[key], targetKey);
+            if (found !== null && found !== undefined) return found;
+        }
+    }
+    return null;
+}
+
+// Extractor seguro para URLs de enlaces Atom (evita [object Object])
+function extractLinkUrl(entry) {
+    if (!entry) return null;
+    let linkField = entry.link;
+    if (!linkField && entry.entry) linkField = entry.entry.link;
+    
+    if (!linkField) {
+        linkField = findObjectDeep(entry, 'link');
+    }
+    
+    if (!linkField) return null;
+    
+    const links = Array.isArray(linkField) ? linkField : [linkField];
+    const targetLink = links.find(l => l && (l['@_rel'] === 'alternate' || !l['@_rel'])) || links[0];
+    
+    if (targetLink) {
+        if (typeof targetLink === 'string') return targetLink.trim();
+        return targetLink['@_href'] || targetLink['href'] || null;
+    }
+    return null;
+}
+
+function findObjectDeep(obj, targetKey) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (const key of Object.keys(obj)) {
+        const cleanKey = key.includes(':') ? key.split(':')[1] : key;
+        if (cleanKey.toLowerCase() === targetKey.toLowerCase()) {
+            return obj[key];
+        }
+        if (typeof obj[key] === 'object') {
+            const found = findObjectDeep(obj[key], targetKey);
             if (found) return found;
         }
     }
@@ -56,12 +101,12 @@ function getNextPageUrl(jsonObj) {
         if (!feed || !feed.link) return null;
         const links = Array.isArray(feed.link) ? feed.link : [feed.link];
         const nextLink = links.find(l => l && l['@_rel'] === 'next');
-        return nextLink ? nextLink['@_href'] : null;
+        return nextLink ? (nextLink['@_href'] || nextLink['href']) : null;
     } catch (e) { return null; }
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización con trazas detalladas...`);
+    console.log(`[${new Date().toISOString()}] Iniciando captura limpia corregida (Filtro 2026)...`);
     
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
@@ -74,62 +119,56 @@ async function sincronizarLicitaciones() {
         console.log(`URL: ${currentUrl}`);
 
         try {
-            console.log('Descargando feed XML...');
             const response = await fetch(currentUrl, { headers, redirect: 'follow' });
-            
             if (!response.ok) {
                 console.error(`Error HTTP ${response.status} al descargar la página.`);
                 break;
             }
 
             const rawText = await response.text();
-            console.log(`Descarga completa. Tamaño recibido: ${(rawText.length / 1024 / 1024).toFixed(2)} MB`);
+            console.log(`Descarga completa. Tamaño: ${(rawText.length / 1024 / 1024).toFixed(2)} MB`);
 
-            if (rawText.trim().startsWith('<!DOCTYPE') || rawText.includes('<html')) {
-                console.error('El servidor devolvió HTML en lugar de XML (posible bloqueo o error 404/503).');
-                break;
-            }
-
-            console.log('Parseando XML a JSON...');
-            const parseStart = Date.now();
             const jsonObj = parser.parse(rawText);
-            console.log(`Parseo completado en ${(Date.now() - parseStart) / 1000}s`);
-
             const entries = findEntriesRecursive(jsonObj);
+            
             if (!entries || entries.length === 0) {
-                console.log('No se encontraron entradas (entry) en esta página.');
+                console.log('No se encontraron entradas en esta página.');
                 break;
             }
 
-            console.log(`Se encontraron ${entries.length} entradas en el feed. Filtrando y mapeando...`);
+            console.log(`Entradas encontradas: ${entries.length}. Filtrando...`);
             
             const batchMap = new Map();
             let skippedOld = 0;
+            let skippedNoUrl = 0;
 
             for (const entry of entries) {
-                const pubDateRaw = findValueDeep(entry, 'Published') || findValueDeep(entry, 'IssueDate');
+                const pubDateRaw = findValueDeep(entry, 'Published') || findValueDeep(entry, 'IssueDate') || findValueDeep(entry, 'updated');
                 const pubDate = pubDateRaw ? new Date(pubDateRaw) : null;
                 
-                // Filtro estricto 2026
+                // Filtro estricto 2026 en adelante
                 if (!pubDate || isNaN(pubDate.getTime()) || pubDate.getFullYear() < 2026) {
                     skippedOld++;
+                    continue;
+                }
+
+                const url = extractLinkUrl(entry);
+                if (!url) {
+                    skippedNoUrl++;
                     continue;
                 }
 
                 const rawTitle = findValueDeep(entry, 'Title') || '';
                 const objetoContrato = rawTitle.replace(/Id licitación: [^;]+; /i, '').substring(0, 500);
                 
-                const numExpediente = findValueDeep(entry, 'ContractFolderID') || 'S/N';
+                const numExpediente = findValueDeep(entry, 'ContractFolderID') || findValueDeep(entry, 'ID') || 'S/N';
                 const tipoContrato = findValueDeep(entry, 'ContractTypeCode');
                 const cpv = findValueDeep(entry, 'ItemClassificationCode');
                 const fechaFin = findValueDeep(entry, 'SubmissionDeadlineDate') || findValueDeep(entry, 'Deadline');
-                const provincia = findValueDeep(entry, 'CitySubdivisionName') || findValueDeep(entry, 'Province');
-                const url = findValueDeep(entry, 'link') || '';
+                const provincia = findValueDeep(entry, 'CitySubdivisionName') || findValueDeep(entry, 'Province') || findValueDeep(entry, 'CountrySubentity');
                 
                 const presupuestoRaw = findValueDeep(entry, 'TotalAmount') || findValueDeep(entry, 'TaxExclusiveAmount');
                 const presupuesto = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
-
-                if (!url) continue;
 
                 batchMap.set(url, {
                     num_expediente: numExpediente.substring(0, 255),
@@ -137,8 +176,8 @@ async function sincronizarLicitaciones() {
                     presupuesto_base: !isNaN(presupuesto) ? presupuesto : null,
                     tipo_contrato: tipoContrato ? tipoContrato.substring(0, 100) : null,
                     codigo_cpv: cpv ? cpv.substring(0, 50) : null,
-                    estado_oficial: 'Publicada', // o el mapeo que prefieras
-                    fecha_fin_oferta: fechaFin ? new Date(fechaFin).toISOString() : null,
+                    estado_oficial: 'Publicada',
+                    fecha_fin_oferta: fechaFin && !isNaN(new Date(fechaFin).getTime()) ? new Date(fechaFin).toISOString() : null,
                     provincia: provincia ? provincia.substring(0, 100) : null,
                     url_licitacion: url,
                     origen: 'PLACSP',
@@ -147,7 +186,7 @@ async function sincronizarLicitaciones() {
             }
 
             const batch = Array.from(batchMap.values());
-            console.log(`Filtro aplicado -> Omitidos (<2026): ${skippedOld} | Válidos para guardar: ${batch.length}`);
+            console.log(`Filtro -> Omitidos (<2026): ${skippedOld} | Sin URL: ${skippedNoUrl} | Válidos para guardar: ${batch.length}`);
 
             if (batch.length > 0) {
                 console.log('Enviando lote a Supabase...');
@@ -158,7 +197,7 @@ async function sincronizarLicitaciones() {
                 if (upsertError) {
                     console.error('Error al insertar en Supabase:', upsertError.message);
                 } else {
-                    console.log('¡Lote guardado en Supabase con éxito!');
+                    console.log(`¡Lote de ${batch.length} licitaciones guardado en Supabase con éxito!`);
                 }
             }
 
@@ -167,10 +206,10 @@ async function sincronizarLicitaciones() {
                 console.log('No hay más páginas siguientes. Sincronización completada.');
                 break;
             }
-            console.log(`Siguiente página detectada: ${currentUrl}`);
+            console.log(`Siguiente página: ${currentUrl}`);
 
         } catch (error) {
-            console.error('Excepción atrapada en el ciclo:', error);
+            console.error('Excepción en ciclo:', error);
             break;
         }
     }
