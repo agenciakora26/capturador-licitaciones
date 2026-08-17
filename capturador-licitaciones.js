@@ -17,6 +17,105 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const INITIAL_ATOM_URL = 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom';
 
+// ==========================================
+// DICCIONARIOS OFICIALES PLACSP / CODICE
+// ==========================================
+
+const mapaTiposContrato = {
+    '1': 'Suministros',
+    '2': 'Servicios',
+    '3': 'Obras',
+    '7': 'Administrativo especial',
+    '8': 'Privado',
+    '21': 'Gestión de Servicios Públicos',
+    '22': 'Concesión de Servicios',
+    '31': 'Concesión de Obras Públicas',
+    '32': 'Concesión de Obras',
+    '40': 'Colaboración entre el sector público y sector privado',
+    '50': 'Patrimonial'
+};
+
+const mapaSubtiposSuministros = {
+    '1': 'Alquiler',
+    '2': 'Adquisición'
+};
+
+const mapaSubtiposObras = {
+    '4500': 'Construcción',
+    '4510': 'Preparación de obras',
+    '4511': 'Demolición de inmuebles y movimientos de tierras',
+    '4512': 'Perforaciones y sondeos',
+    '4520': 'Construcción general de inmuebles y obras de ingeniería',
+    '4521': 'Construcción general de edificios y obras singulares',
+    '4522': 'Construcción de cubiertas y estructuras de cerramiento',
+    '4523': 'Construcción de autopistas, carreteras, campos de aterrizaje',
+    '4524': 'Obras hidráulicas',
+    '4525': 'Otras construcciones especializadas',
+    '4530': 'Instalación de edificios y obras',
+    '4531': 'Instalación eléctrica',
+    '4532': 'Aislamiento térmico, acústico y antivibratorio',
+    '4533': 'Fontanería',
+    '4534': 'Otras instalaciones de edificios y obras',
+    '4540': 'Acabado de edificios y obras',
+    '4541': 'Revocamiento',
+    '4542': 'Instalaciones de carpintería',
+    '4543': 'Revestimiento de suelos y paredes',
+    '4544': 'Pintura y acristalamiento',
+    '4545': 'Otros acabados de edificios y obras',
+    '4550': 'Alquiler de equipo de construcción o demolición con operador'
+};
+
+const mapaSubtiposServicios = {
+    '1': 'Servicios de mantenimiento y reparación',
+    '2': 'Servicios de transporte por vía terrestre',
+    '3': 'Servicios de transporte aéreo',
+    '4': 'Transporte de correo por vía terrestre y por vía aérea',
+    '5': 'Servicios de telecomunicación',
+    '6': 'Servicios financieros',
+    '7': 'Servicios de informática y servicios conexos',
+    '8': 'Servicios de investigación y desarrollo',
+    '9': 'Servicios de contabilidad, auditoría y teneduría de libros',
+    '10': 'Servicios de investigación de estudios y encuestas de la opinión pública',
+    '11': 'Servicios de consultores de dirección y servicios conexos',
+    '12': 'Servicios de arquitectura e ingeniería',
+    '13': 'Servicios de publicidad',
+    '14': 'Servicios de limpieza de edificios y administración de bienes raíces',
+    '15': 'Servicios editoriales y de imprenta',
+    '16': 'Servicios de alcantarillado y eliminación de desperdicios',
+    '17': 'Servicios de hostelería y restaurante',
+    '18': 'Servicios de transporte por ferrocarril',
+    '19': 'Servicios de transporte fluvial y marítimo',
+    '20': 'Servicios de transporte complementarios y auxiliares',
+    '21': 'Servicios jurídicos',
+    '22': 'Servicios de colocación y suministro de personal',
+    '23': 'Servicios de investigación y seguridad',
+    '24': 'Servicios de educación y formación profesional',
+    '25': 'Servicios sociales y de salud',
+    '26': 'Servicios de esparcimiento, culturales y deportivos',
+    '27': 'Otros servicios'
+};
+
+const mapaSubtiposPatrimonial = {
+    '10': 'Autorización demanial',
+    '11': 'Concesión demanial',
+    '20': 'Explotación de bienes inmuebles mediante arrendamiento',
+    '21': 'Explotación de bienes muebles mediante arrendamiento',
+    '22': 'Explotación de bienes de propiedad incorporal',
+    '23': 'Cesión de uso/titularidad',
+    '30': 'Adquisición de inmuebles',
+    '31': 'Adquisición de derechos de propiedad incorporal',
+    '40': 'Arrendamiento de inmuebles',
+    '50': 'Enajenación de inmuebles',
+    '51': 'Enajenación de bienes muebles',
+    '52': 'Enajenación de derechos de propiedad incorporal',
+    '60': 'Permuta',
+    '100': 'Otros contratos patrimoniales'
+};
+
+// ==========================================
+// FUNCIONES DE EXTRACCIÓN
+// ==========================================
+
 // Extractor robusto de valores en UBL / JSON parseado
 function findValueDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
@@ -52,7 +151,6 @@ function extractFechaFin(entry) {
                 const endDate = findValueDeep(deadlinePeriod, 'EndDate');
                 if (endDate) {
                     const endTime = findValueDeep(deadlinePeriod, 'EndTime');
-                    // Si hay hora, la combinamos para mayor precisión
                     if (endTime) {
                         return `${endDate}T${endTime}`;
                     }
@@ -60,30 +158,24 @@ function extractFechaFin(entry) {
                 }
             }
         }
-        // Fallback a búsquedas planas por si el esquema varía
         return findValueDeep(entry, 'SubmissionDeadlineDate') || findValueDeep(entry, 'Deadline');
     } catch (e) {
         return null;
     }
 }
 
-// Extractor específico para obtener el tipo de contrato con múltiples alternativas en el XML
+// Extractor del Tipo de Contrato oficial
 function extractTipoContrato(entry) {
     let tipo = findValueDeep(entry, 'ContractTypeCode') || 
                findValueDeep(entry, 'TypeCode') || 
                findValueDeep(entry, 'TipoContrato');
                
     if (tipo) {
-        const mapaCodigos = {
-            '1': 'Suministros',
-            '2': 'Servicios',
-            '3': 'Obras',
-            '4': 'Gestión de Servicios Públicos',
-            '5': 'Concesión de Servicios',
-            '6': 'Concesión de Obras'
-        };
-        if (mapaCodigos[tipo]) return mapaCodigos[tipo];
-        return tipo;
+        const codigoLimpio = String(tipo).trim();
+        if (mapaTiposContrato[codigoLimpio]) {
+            return mapaTiposContrato[codigoLimpio];
+        }
+        return codigoLimpio;
     }
     
     const summary = findValueDeep(entry, 'Summary') || '';
@@ -95,9 +187,31 @@ function extractTipoContrato(entry) {
     return null;
 }
 
+// Extractor del Subtipo de Contrato según el tipo principal
+function extractSubtipo(entry, tipoContrato) {
+    if (!tipoContrato) return 'General';
+    
+    const codigoSubtipo = findValueDeep(entry, 'SubTypeCode') || findValueDeep(entry, 'ServiceContractCode');
+    const codigoLimpio = codigoSubtipo ? String(codigoSubtipo).trim() : null;
+
+    if (!codigoLimpio) return 'General';
+
+    switch (tipoContrato) {
+        case 'Suministros':
+            return mapaSubtiposSuministros[codigoLimpio] || 'General';
+        case 'Obras':
+            return mapaSubtiposObras[codigoLimpio] || 'General';
+        case 'Servicios':
+            return mapaSubtiposServicios[codigoLimpio] || 'General';
+        case 'Patrimonial':
+            return mapaSubtiposPatrimonial[codigoLimpio] || 'General';
+        default:
+            return 'General';
+    }
+}
+
 // Extractor actualizado para el estado oficial real de la licitación
 function extractEstadoOficial(entry) {
-    // 1. Diccionario oficial basado exactamente en el HTML de la PLACSP
     const mapaEstados = {
         'CREA': 'Creada',
         'PRE': 'Anuncio Previo',
@@ -114,16 +228,12 @@ function extractEstadoOficial(entry) {
         'ANUL': 'Anulada'
     };
 
-    // 2. Intentar obtener el código desde la etiqueta XML
     const codigo = findValueDeep(entry, 'ContractFolderStatusCode');
-    
     if (codigo && mapaEstados[codigo.trim()]) {
         return mapaEstados[codigo.trim()];
     }
 
-    // 3. Fallback: Buscar en el texto (Summary) por si viene en formato texto plano
     const summary = (findValueDeep(entry, 'Summary') || '').toUpperCase();
-    
     if (summary.includes('ESTADO: RES_PAR')) return 'Parcialmente Resuelta';
     if (summary.includes('ESTADO: PAR_RES')) return 'Adjudicación Provisional';
     if (summary.includes('ESTADO: ADJ_PAR')) return 'Parcialmente Adjudicada';
@@ -138,9 +248,9 @@ function extractEstadoOficial(entry) {
     if (summary.includes('ESTADO: CERR')) return 'Cerrada';
     if (summary.includes('ESTADO: ANUL')) return 'Anulada';
 
-    // Si no se encuentra nada, valor por defecto
     return 'Consultar Pliego';
 }
+
 function extractLinkUrl(entry) {
     if (!entry) return null;
     let linkField = entry.link;
@@ -198,7 +308,7 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando captura completa (incluyendo fecha fin de oferta)...`);
+    console.log(`[${new Date().toISOString()}] Iniciando captura completa (tipos, subtipos, estados y plazos)...`);
     
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
@@ -251,10 +361,10 @@ async function sincronizarLicitaciones() {
                 
                 const numExpediente = findValueDeep(entry, 'ContractFolderID') || findValueDeep(entry, 'ID') || 'S/N';
                 const tipoContrato = extractTipoContrato(entry);
+                const subtipoContrato = extractSubtipo(entry, tipoContrato);
                 const estadoOficial = extractEstadoOficial(entry);
                 const cpv = findValueDeep(entry, 'ItemClassificationCode');
                 
-                // Extracción correcta de la fecha de fin de oferta
                 const fechaFinRaw = extractFechaFin(entry);
                 const fechaFinISO = fechaFinRaw && !isNaN(new Date(fechaFinRaw).getTime()) ? new Date(fechaFinRaw).toISOString() : null;
 
@@ -268,6 +378,7 @@ async function sincronizarLicitaciones() {
                     objeto_contrato: objetoContrato || 'Sin objeto',
                     presupuesto_base: !isNaN(presupuesto) ? presupuesto : null,
                     tipo_contrato: tipoContrato ? tipoContrato.substring(0, 100) : null,
+                    subtipo_contrato: subtipoContrato ? subtipoContrato.substring(0, 100) : 'General',
                     codigo_cpv: cpv ? cpv.substring(0, 50) : null,
                     estado_oficial: estadoOficial ? estadoOficial.substring(0, 100) : 'Publicada',
                     fecha_fin_oferta: fechaFinISO,
@@ -282,7 +393,7 @@ async function sincronizarLicitaciones() {
             console.log(`Filtro -> Omitidos (<2026): ${skippedOld} | Sin URL: ${skippedNoUrl} | Válidos para upsert: ${batch.length}`);
 
             if (batch.length > 0) {
-                console.log('Enviando lote a Supabase (actualizando estados y plazos)...');
+                console.log('Enviando lote a Supabase (actualizando tipos, subtipos, estados y plazos)...');
                 const { error: upsertError } = await supabase
                     .from('licitaciones')
                     .upsert(batch, { onConflict: 'url_licitacion' });
@@ -306,4 +417,5 @@ async function sincronizarLicitaciones() {
         }
     }
 }
+
 export { sincronizarLicitaciones as ejecutarCapturadorLicitaciones };
