@@ -13,10 +13,10 @@
     "@supabase/supabase-js": "^2.0.0",
     "adm-zip": "^0.5.16",
     "cheerio": "^1.0.0",
-    "fast-xml-parser": "^4.3.6",
+    "fast-xml-parser": "^4.0.0",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^3.11.174",
     "resend": "^2.0.0",
-    "ws": "^8.16.0"
+    "ws": "^8.0.0"
   }
 }
