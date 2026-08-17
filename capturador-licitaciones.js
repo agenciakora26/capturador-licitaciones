@@ -278,5 +278,4 @@ async function sincronizarLicitaciones() {
         }
     }
 }
-
-sincronizarLicitaciones();
+export { sincronizarLicitaciones as ejecutarCapturadorLicitaciones };
