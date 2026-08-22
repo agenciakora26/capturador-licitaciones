@@ -391,7 +391,7 @@ function getNextPageUrl(jsonObj) {
 }
 
 async function sincronizarLicitaciones() {
-    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada con detección inteligente de provincia...`);
+    console.log(`[${new Date().toISOString()}] Iniciando sincronización diaria optimizada con códigos NUTS...`);
     let currentUrl = INITIAL_ATOM_URL;
     let pageCount = 0;
     const MAX_PAGES = 3;
@@ -434,7 +434,8 @@ async function sincronizarLicitaciones() {
                 const fechaFinRaw = extractFechaFin(entry);
                 const fechaFinISO = fechaFinRaw && !isNaN(new Date(fechaFinRaw).getTime()) ? new Date(fechaFinRaw).toISOString() : null;
                 
-                const provincia = extractProvincia(entry);
+                // 1. Obtenemos el objeto con { codigo_nuts, provincia }
+                const ubicacion = extractProvincia(entry);
                 
                 const presupuestoRaw = findValueDeep(entry, 'TotalAmount') || findValueDeep(entry, 'TaxExclusiveAmount');
                 const presupuesto = presupuestoRaw ? parseFloat(presupuestoRaw.replace(',', '.')) : null;
@@ -450,7 +451,9 @@ async function sincronizarLicitaciones() {
                     codigo_cpv: cpv ? cpv.substring(0, 50) : null,
                     estado_oficial: estadoOficial ? estadoOficial.substring(0, 100) : 'Publicada',
                     fecha_fin_oferta: fechaFinISO,
-                    provincia: provincia ? provincia.substring(0, 100) : null,
+                    // 2. Añadimos el código NUTS oficial y la provincia limpia
+                    codigo_nuts: ubicacion.codigo_nuts ? ubicacion.codigo_nuts.substring(0, 10) : 'ES',
+                    provincia: ubicacion.provincia ? ubicacion.provincia.substring(0, 100) : 'España',
                     url_licitacion: url,
                     origen: 'PLACSP',
                     created_at: new Date().toISOString()
@@ -460,7 +463,7 @@ async function sincronizarLicitaciones() {
             if (batchMap.size > 0) {
                 const { error } = await supabase.from('licitaciones').upsert(Array.from(batchMap.values()), { onConflict: 'url_licitacion' });
                 if (error) console.error('Error Supabase:', error.message);
-                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones con provincia inteligente.`);
+                else console.log(`Sincronizado lote de ${batchMap.size} licitaciones con NUTS y provincia inteligente.`);
             }
 
             if (pageCount >= MAX_PAGES) {
