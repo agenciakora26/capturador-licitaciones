@@ -176,7 +176,9 @@ const MAPA_TEXTO_A_NUTS = {
     "ceuta": "ES630", "melilla": "ES640", "canarias": "ES70", "gran canaria": "ES705",
     "tenerife": "ES709", "extra-regio nuts 1": "ESZ", "extra-regio nuts 2": "ESZZ", "extra-regio nuts 3": "ESZZZ"
 };
-
+const MAPA_NUTS_A_TEXTO = Object.fromEntries(
+    Object.entries(MAPA_TEXTO_A_NUTS).map(([texto, nuts]) => [nuts, texto])
+);
 function findValueDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
     for (const key of Object.keys(obj)) {
@@ -262,7 +264,6 @@ function extractProvincia(entry) {
     const textoCompleto = `${partyName} ${summary}`.toLowerCase();
 
     for (const [key, code] of Object.entries(MAPA_TEXTO_A_NUTS)) {
-        // Evitamos coincidencias absurdas exigiendo que sea una palabra clara
         const regex = new RegExp(`\\b${key}\\b`, 'i');
         if (regex.test(textoCompleto)) {
             return {
@@ -272,7 +273,7 @@ function extractProvincia(entry) {
         }
     }
 
-    // 4. SI NO HAY CERTEZA, DEVOLVEMOS NULL (Evitamos datos basura)
+    // 4. SI NO HAY CERTEZA, DEVOLVEMOS NULL (Cero basura)
     return {
         codigo_nuts: null,
         provincia: null
