@@ -146,19 +146,36 @@ const mapaSubtiposPatrimonial = {
     '100': 'Otros contratos patrimoniales'
 };
 
-const PROVINCIAS_ESPANA = [
-    'Álava', 'Albacete', 'Alicante', 'Almería', 'Asturias', 'Ávila', 'Badajoz', 'Barcelona', 
-    'Burgos', 'Cáceres', 'Cádiz', 'Cantabria', 'Castellón', 'Ciudad Real', 'Córdoba', 'Cuenca', 
-    'Girona', 'Granada', 'Guadalajara', 'Guipúzcoa', 'Huelva', 'Huesca', 'Jaén', 'La Rioja', 
-    'Las Palmas', 'León', 'Lleida', 'Lugo', 'Madrid', 'Málaga', 'Murcia', 'Navarra', 'Ourense', 
-    'Palencia', 'Pontevedra', 'Salamanca', 'Santa Cruz de Tenerife', 'Segovia', 'Sevilla', 
-    'Soria', 'Tarragona', 'Teruel', 'Toledo', 'Valencia', 'Valladolid', 'Vizcaya', 'Zamora', 
-    'Zaragoza', 'Ceuta', 'Melilla', 'Baleares', 'Mallorca', 'Menorca', 'Ibiza'
-];
+// ==========================================
+// MAPA NUTS OFICIAL Y FUNCIONES DE EXTRACCIÓN
+// ==========================================
 
-// ==========================================
-// FUNCIONES DE EXTRACCIÓN Y LIMPIEZA
-// ==========================================
+const MAPA_TEXTO_A_NUTS = {
+    "españa": "ES", "espaã±a": "ES", "espana": "ES",
+    "noroeste": "ES1", "galicia": "ES11", "a coruña": "ES111",
+    "lugo": "ES112", "ourense": "ES113", "pontevedra": "ES114", "principado de asturias": "ES12",
+    "asturias": "ES120", "cantabria": "ES130", "noreste": "ES2", "país vasco": "ES21",
+    "araba/álava": "ES211", "álava": "ES211", "gipuzkoa": "ES212", "bizkaia": "ES213",
+    "comunidad foral de navarra": "ES22", "navarra": "ES220", "la rioja": "ES230",
+    "aragón": "ES24", "huesca": "ES241", "teruel": "ES242", "zaragoza": "ES243",
+    "comunidad de madrid": "ES3", "madrid": "ES300", "centro (es)": "ES4",
+    "castilla y león": "ES41", "ávila": "ES411", "burgos": "ES412", "león": "ES413",
+    "palencia": "ES414", "salamanca": "ES415", "segovia": "ES416", "soria": "ES417",
+    "valladolid": "ES418", "zamora": "ES419", "castilla-la mancha": "ES42",
+    "albacete": "ES421", "ciudad real": "ES422", "cuenca": "ES423", "guadalajara": "ES424",
+    "toledo": "ES425", "extremadura": "ES43", "badajoz": "ES431", "cáceres": "ES432",
+    "este": "ES5", "cataluña": "ES51", "barcelona": "ES511", "girona": "ES512",
+    "lleida": "ES513", "tarragona": "ES514", "comunitat valenciana": "ES52",
+    "alicante/alacant": "ES521", "alicante": "ES521", "castellón/castelló": "ES522",
+    "castellón": "ES522", "valencia/valència": "ES523", "valencia": "ES523",
+    "illes balears": "ES53", "baleares": "ES53", "eivissa y formentera": "ES531",
+    "mallorca": "ES532", "menorca": "ES533", "sur": "ES6", "andalucía": "ES61",
+    "almería": "ES611", "cádiz": "ES612", "córdoba": "ES613", "granada": "ES614",
+    "huelva": "ES615", "jaén": "ES616", "málaga": "ES617", "sevilla": "ES618",
+    "región de murcia": "ES62", "murcia": "ES620", "ciudades autónomas": "ES63",
+    "ceuta": "ES630", "melilla": "ES640", "canarias": "ES70", "gran canaria": "ES705",
+    "tenerife": "ES709", "extra-regio nuts 1": "ESZ", "extra-regio nuts 2": "ESZZ", "extra-regio nuts 3": "ESZZZ"
+};
 
 function findValueDeep(obj, targetKey) {
     if (!obj || typeof obj !== 'object') return null;
@@ -196,55 +213,56 @@ function findObjectDeep(obj, targetKey) {
     return null;
 }
 
-function esEspanaOInvalido(texto) {
-    if (!texto) return true;
-    const t = texto.toLowerCase().trim();
-    return t === 'españa' || t === 'espaã±a' || t === 'espana' || t.length <= 1;
-}
-
-function limpiarProvincia(texto) {
-    if (!texto) return null;
-    let corregido = texto
-        .replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
-        .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
-        .replace(/Ã/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
-        .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ');
-
-    let limpia = corregido.split('/')[0].trim();
-    return limpia.charAt(0).toUpperCase() + limpia.slice(1).toLowerCase();
-}
-
 function extractProvincia(entry) {
-    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode'];
+    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode', 'CountrySubentityCode', 'NutsCode'];
     
     for (const blockName of locationBlocks) {
         const block = findObjectDeep(entry, blockName);
         if (block) {
-            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province');
-            if (subentity && !subentity.toLowerCase().includes('extra-regio') && !esEspanaOInvalido(subentity)) {
-                return limpiarProvincia(subentity);
+            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province') || findValueDeep(block, 'Code') || (typeof block === 'string' ? block : null);
+            if (subentity) {
+                const limpia = subentity.toLowerCase().trim();
+                if (MAPA_TEXTO_A_NUTS[limpia]) {
+                    return {
+                        codigo_nuts: MAPA_TEXTO_A_NUTS[limpia],
+                        provincia: subentity
+                    };
+                }
             }
         }
     }
 
-    const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province');
-    if (subentityGlobal && !subentityGlobal.toLowerCase().includes('extra-regio') && !esEspanaOInvalido(subentityGlobal)) {
-        return limpiarProvincia(subentityGlobal);
+    const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province') || findValueDeep(entry, 'JurisdictionRegionCode');
+    if (subentityGlobal) {
+        const limpia = subentityGlobal.toLowerCase().trim();
+        if (MAPA_TEXTO_A_NUTS[limpia]) {
+            return {
+                codigo_nuts: MAPA_TEXTO_A_NUTS[limpia],
+                provincia: subentityGlobal
+            };
+        }
     }
 
     // Plan B: Búsqueda inteligente en el órgano de contratación y resumen
     const partyName = findValueDeep(entry, 'PartyName') || findValueDeep(entry, 'Name') || findValueDeep(entry, 'ContractingParty') || '';
     const summary = findValueDeep(entry, 'Summary') || '';
-    const textoCompleto = `${partyName} ${summary}`;
+    const textoCompleto = `${partyName} ${summary}`.toLowerCase();
 
-    for (const provincia of PROVINCIAS_ESPANA) {
-        const regex = new RegExp(`\\b${provincia}\\b`, 'i');
+    for (const [key, code] of Object.entries(MAPA_TEXTO_A_NUTS)) {
+        const regex = new RegExp(`\\b${key}\\b`, 'i');
         if (regex.test(textoCompleto)) {
-            return provincia;
+            return {
+                codigo_nuts: code,
+                provincia: key.charAt(0).toUpperCase() + key.slice(1)
+            };
         }
     }
 
-    return 'España';
+    // Por defecto ámbito nacional
+    return {
+        codigo_nuts: "ES",
+        provincia: "España"
+    };
 }
 
 function extractTipoProcedimiento(entry) {
