@@ -217,7 +217,7 @@ function findObjectDeep(obj, targetKey) {
 
 function extractProvincia(entry) {
     // 1. PRIORIDAD MÁXIMA: Buscar si el XML trae un código NUTS directo oficial
-    const nutsDirecto = findValueDeep(entry, 'NutsCode') || findValueDeep(entry, 'CountrySubentityCode');
+    const nutsDirecto = findValueDeep(entry, 'NutsCode') || findValueDeep(entry, 'CountrySubentityCode') || findValueDeep(entry, 'NUTS');
     if (nutsDirecto) {
         const nutsLimpio = String(nutsDirecto).toUpperCase().trim();
         if (nutsLimpio.startsWith('ES')) {
@@ -229,12 +229,12 @@ function extractProvincia(entry) {
         }
     }
 
-    // 2. SEGUNDA OPCIÓN: Bloques de localización basados en texto
-    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode'];
+    // 2. SEGUNDA OPCIÓN: Bloques de localización extendidos
+    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode', 'Address', 'Location', 'CountrySubentity'];
     for (const blockName of locationBlocks) {
         const block = findObjectDeep(entry, blockName);
         if (block) {
-            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province') || findValueDeep(block, 'Code');
+            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province') || findValueDeep(block, 'Code') || findValueDeep(block, 'CityName');
             if (subentity) {
                 const limpia = subentity.toLowerCase().trim();
                 if (MAPA_TEXTO_A_NUTS[limpia]) {
@@ -247,21 +247,11 @@ function extractProvincia(entry) {
         }
     }
 
-    const subentityGlobal = findValueDeep(entry, 'CountrySubentity') || findValueDeep(entry, 'Province') || findValueDeep(entry, 'JurisdictionRegionCode');
-    if (subentityGlobal) {
-        const limpia = subentityGlobal.toLowerCase().trim();
-        if (MAPA_TEXTO_A_NUTS[limpia]) {
-            return {
-                codigo_nuts: MAPA_TEXTO_A_NUTS[limpia],
-                provincia: subentityGlobal
-            };
-        }
-    }
-
-    // 3. PLAN B: Búsqueda estricta por expresiones regulares en texto
+    // 3. PLAN B: Búsqueda estricta por expresiones regulares en texto completo
     const partyName = findValueDeep(entry, 'PartyName') || findValueDeep(entry, 'Name') || findValueDeep(entry, 'ContractingParty') || '';
     const summary = findValueDeep(entry, 'Summary') || '';
-    const textoCompleto = `${partyName} ${summary}`.toLowerCase();
+    const title = findValueDeep(entry, 'Title') || '';
+    const textoCompleto = `${partyName} ${title} ${summary}`.toLowerCase();
 
     for (const [key, code] of Object.entries(MAPA_TEXTO_A_NUTS)) {
         const regex = new RegExp(`\\b${key}\\b`, 'i');
@@ -273,13 +263,18 @@ function extractProvincia(entry) {
         }
     }
 
-    // 4. SI NO HAY CERTEZA, DEVOLVEMOS NULL (Cero basura)
+    // --- CHIVATO DE DEPURACIÓN TEMPORAL ---
+    // Si llega aquí y todo es null, imprimimos un resumen del objeto que falló en la consola
+    // para descubrir qué etiquetas usa este formato en particular.
+    if (Math.random() < 0.05) { // Muestra aleatoria del 5% para no saturar la consola
+        console.log("🔍 [DEBUG NUTS NULL] Expediente sin NUTS detectado. Título:", title.substring(0, 80));
+    }
+
     return {
         codigo_nuts: null,
         provincia: null
     };
 }
-
 function extractTipoProcedimiento(entry) {
     let codigo = findValueDeep(entry, 'ProcedureCode');
     if (codigo) {
