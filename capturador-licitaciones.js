@@ -214,12 +214,25 @@ function findObjectDeep(obj, targetKey) {
 }
 
 function extractProvincia(entry) {
-    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode', 'CountrySubentityCode', 'NutsCode'];
-    
+    // 1. PRIORIDAD MÁXIMA: Buscar si el XML trae un código NUTS directo oficial
+    const nutsDirecto = findValueDeep(entry, 'NutsCode') || findValueDeep(entry, 'CountrySubentityCode');
+    if (nutsDirecto) {
+        const nutsLimpio = String(nutsDirecto).toUpperCase().trim();
+        if (nutsLimpio.startsWith('ES')) {
+            const nombreProvincia = MAPA_NUTS_A_TEXTO[nutsLimpio] || null;
+            return {
+                codigo_nuts: nutsLimpio,
+                provincia: nombreProvincia ? nombreProvincia.charAt(0).toUpperCase() + nombreProvincia.slice(1) : null
+            };
+        }
+    }
+
+    // 2. SEGUNDA OPCIÓN: Bloques de localización basados en texto
+    const locationBlocks = ['RealizedLocation', 'DeliveryLocation', 'JurisdictionRegionCode'];
     for (const blockName of locationBlocks) {
         const block = findObjectDeep(entry, blockName);
         if (block) {
-            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province') || findValueDeep(block, 'Code') || (typeof block === 'string' ? block : null);
+            const subentity = findValueDeep(block, 'CountrySubentity') || findValueDeep(block, 'Province') || findValueDeep(block, 'Code');
             if (subentity) {
                 const limpia = subentity.toLowerCase().trim();
                 if (MAPA_TEXTO_A_NUTS[limpia]) {
@@ -243,12 +256,13 @@ function extractProvincia(entry) {
         }
     }
 
-    // Plan B: Búsqueda inteligente en el órgano de contratación y resumen
+    // 3. PLAN B: Búsqueda estricta por expresiones regulares en texto
     const partyName = findValueDeep(entry, 'PartyName') || findValueDeep(entry, 'Name') || findValueDeep(entry, 'ContractingParty') || '';
     const summary = findValueDeep(entry, 'Summary') || '';
     const textoCompleto = `${partyName} ${summary}`.toLowerCase();
 
     for (const [key, code] of Object.entries(MAPA_TEXTO_A_NUTS)) {
+        // Evitamos coincidencias absurdas exigiendo que sea una palabra clara
         const regex = new RegExp(`\\b${key}\\b`, 'i');
         if (regex.test(textoCompleto)) {
             return {
@@ -258,10 +272,10 @@ function extractProvincia(entry) {
         }
     }
 
-    // Por defecto ámbito nacional
+    // 4. SI NO HAY CERTEZA, DEVOLVEMOS NULL (Evitamos datos basura)
     return {
-        codigo_nuts: "ES",
-        provincia: "España"
+        codigo_nuts: null,
+        provincia: null
     };
 }
 
